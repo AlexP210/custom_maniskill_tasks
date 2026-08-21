@@ -74,7 +74,10 @@ def make_env(
             collected. On those, `ignore_terminations` is already true of the task itself.
         obs_mode, control_mode, num_envs: passed to `gym.make`. `control_mode` defaults to the
             one every recorded dataset in this project uses; a policy run under a different
-            control mode than its data was recorded with is a silent failure.
+            control mode than its data was recorded with is a silent failure. `control_mode=None`
+            means "whatever the task id already defaults to" and is not forwarded, since
+            `gym.make(control_mode=None)` would override a registration default (the `-v1.1` ids
+            carry one) rather than defer to it.
         camera_view: which camera the observations come from -- "default" (the task's own camera,
             also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
             workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).
@@ -108,11 +111,13 @@ def make_env(
     sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid)
     sensor_configs.update(env_kwargs.pop("sensor_configs", {}) or {})
 
+    if control_mode is not None:
+        env_kwargs["control_mode"] = control_mode
+
     with camera_view_applied(view, task_name, wrist_only=wrist_only):
         env = gym.make(
             id=task_name,
             obs_mode=obs_mode,
-            control_mode=control_mode,
             num_envs=num_envs,
             sensor_configs=sensor_configs,
             render_mode=render_mode,

@@ -37,9 +37,10 @@ env = gym.make("PushCube-v1.1", num_envs=1)   # plain gym.make works, no flags t
 ```
 
 The registry is per process, so a tool that only does `import mani_skill.envs` will not find these
-ids: `tools/ppo_stages_fast.py` and `tools/replay_trajectory.py` each need
-`import custom_maniskill_tasks` before they can be pointed at a `-v1.1` task. Datasets recorded so
-far name the stock `-v1` ids and replay unchanged.
+ids. `tools/ppo_stages_fast.py` (which collects the datasets) and `tools/replay_trajectory.py`
+(which converts them) both import this package, so both accept a `-v1.1` task; anything else that
+should needs the same import. Datasets recorded so far name the stock `-v1` ids and replay
+unchanged.
 
 ## Usage
 
@@ -142,14 +143,31 @@ python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_sk
 (the tasks share one time limit, so every env truncates together), where `FrameSkip` freezes a
 finished env's observation and stops accumulating its reward.
 
-## Migrating the existing call sites
+## Call sites
+
+Already using this module:
+
+- [tools/ppo_stages_fast.py](../../tools/ppo_stages_fast.py) — builds both its training and eval envs
+  with `make_env` and pins its devices with `backend_kwargs`; `--env_id` accepts the `-v1.1` ids and
+  defaults to `PushCube-v1.1`. Driven by
+  [tools/make_ppo_staged_maniskill_data.sh](../../tools/make_ppo_staged_maniskill_data.sh), whose
+  per-task settings accept either id spelling.
+- [tools/replay_trajectory.py](../../tools/replay_trajectory.py) — `--camera-view` is
+  `build_sensor_configs` + `camera_view_applied`, device pinning is `backend_kwargs`, and the task
+  ids come from the import; it no longer depends on the `tsd` package at all. It does not call
+  `make_env`: it builds the env from the kwargs recorded in the trajectory json, and `RecordEpisode`
+  needs one primitive action per step, which `FrameSkip`/`FrameStack` would break.
+
+- [agents/tsd/tsd/tasks/maniskill_task.py](../../agents/tsd/tsd/tasks/maniskill_task.py) —
+  `make_env` builds the online env, with TSD's `ManiSkillWrapper` passed in as an `obs_wrappers`
+  entry and `n_frames=cfg.num_frames, frame_axis=0`. Its own `PandaHandCam`, `WRIST_CAMERA_FOV`,
+  `sensor_configs` branches, `StackFrames` and termination suppression are gone (−101 lines).
+
+Still to migrate:
 
 | currently in | replace with |
 | --- | --- |
-| `ManiSkillTask.make_env`'s `sensor_configs` branches, `PandaHandCam`, `WRIST_CAMERA_FOV` | `make_env(..., camera_view=cfg.camera_view)`, passing its `ManiSkillWrapper` as an `obs_wrappers` entry and dropping `StackFrames` for `n_frames=cfg.num_frames, frame_axis=0` |
-| `ManiSkillWrapper.step`'s termination suppression | `IgnoreTerminations` (default on) |
-| `replay_trajectory.py`'s `build_sensor_configs`, `maybe_configure_wrist_camera`, `pin_render_backend_to_sim` | `build_sensor_configs`, `camera_view_applied`, `backend_kwargs` — or `make_env` itself, if `RecordEpisode` can be applied on top |
-| `pushcube_wrapper.py`'s `CAMERA_*` constants and its `gymnasium.make` | `make_env("PushCube-v1", camera_view="focused", ...)`, keeping its flat-state adapter |
+| `pushcube_wrapper.py`'s `CAMERA_*` constants and its `gymnasium.make` (DINO-WM, and the copies under agents/TC-WM, agents/dino_bsmpc, agents/sparse_imagination) | `make_env("PushCube-v1", camera_view="focused", ...)`, keeping its flat-state adapter |
 
 Nothing in this module reaches back into an agent package, so it can be adopted one call site at a
 time.
