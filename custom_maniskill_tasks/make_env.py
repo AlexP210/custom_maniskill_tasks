@@ -53,6 +53,7 @@ def make_env(
     sim_backend: str | None = None,
     render_backend: str | None = None,
     render_mode: str | None = "rgb_array",
+    reward_wrappers: Sequence[Callable[[gym.Env], gym.Env]] = (),
     obs_wrappers: Sequence[Callable[[gym.Env], gym.Env]] = (),
     **env_kwargs,
 ) -> gym.Env:
@@ -63,9 +64,9 @@ def make_env(
     episode, and nothing here calls `reset`, so the caller owns every reset and the RNG stream that
     seeds it. Truncation from the task's time limit is still reported, as the signal to reset.
 
-    Wrapper order is `IgnoreTerminations` -> `FrameSkip` -> `obs_wrappers` -> `FrameStack`, so a
-    stacked observation spans `n_frames` macro steps of `frame_skip` primitive steps each, and an
-    observation adapter placed in `obs_wrappers` sees single unstacked frames.
+    Wrapper order is `IgnoreTerminations` -> `FrameSkip` -> `reward_wrappers` -> `obs_wrappers` ->
+    `FrameStack`, so a stacked observation spans `n_frames` macro steps of `frame_skip` primitive
+    steps each, and an observation adapter placed in `obs_wrappers` sees single unstacked frames.
 
     Args:
         task_name: a registered ManiSkill task id, e.g. "PushCube-v1.1"; see `TASKS_IN_USE`. The
@@ -99,7 +100,11 @@ def make_env(
             `backend_kwargs`; None means ManiSkill's own choice (physx_cpu at `num_envs=1`).
         render_mode: for `env.render()`, which uses the separate human render camera and is
             unaffected by `camera_view`.
-        obs_wrappers: callables applied in order between `FrameSkip` and `FrameStack`, for
+        reward_wrappers: callables applied in order between `FrameSkip` and `obs_wrappers`, for
+            wrappers that rewrite the reward (`DINORewardWrapper`). Underneath the observation
+            adapters, so they still see ManiSkill's own observation dict; outside `FrameSkip`, so
+            they are called once per macro step rather than once per primitive step.
+        obs_wrappers: callables applied in order between `reward_wrappers` and `FrameStack`, for
             project-specific observation adapters (TSD's TensorDict view of the observation dict,
             DINO-WM's flat state/proprio one).
         **env_kwargs: anything else `gym.make` takes -- `reward_mode`, `reconfiguration_freq`,
@@ -130,6 +135,8 @@ def make_env(
         env = IgnoreTerminations(env)
     if frame_skip > 1:
         env = FrameSkip(env, frame_skip)
+    for wrapper in reward_wrappers:
+        env = wrapper(env)
     for wrapper in obs_wrappers:
         env = wrapper(env)
     if n_frames is not None:

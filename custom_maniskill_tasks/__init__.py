@@ -37,6 +37,7 @@ from custom_maniskill_tasks.tasks import (
     PushCubeFullHorizonEnv,
 )
 from custom_maniskill_tasks.wrappers import (
+    DINORewardWrapper,
     FrameSkip,
     FrameStack,
     IgnoreTerminations,
@@ -49,6 +50,7 @@ __all__ = [
     "CAMERA_VIEWS",
     "CONTROL_MODE",
     "DEFAULT_CAMERA_RESOLUTION",
+    "DINORewardWrapper",
     "FULL_HORIZON_TASKS",
     "FOCUSED_CAMERA_EYE",
     "FOCUSED_CAMERA_FOV",
