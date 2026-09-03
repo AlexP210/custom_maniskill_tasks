@@ -12,6 +12,11 @@ Registered by importing `custom_maniskill_tasks`. Note that other processes have
 a tool that only does `import mani_skill.envs` (`tools/replay_trajectory.py`,
 `tools/ppo_stages_fast.py`) will not find these ids.
 
+These ids also take a `lighting` kwarg (`LightingMixin`, see `lighting`) naming the condition the
+scene is rendered under. It defaults to the stock lighting, so it changes nothing unless asked;
+being an ordinary env kwarg rather than something applied around `gym.make`, it is recorded into
+any trajectory collected under it and replays from that metadata on its own.
+
 Everything else is the stock task: same scene, reward, success predicate and 50-step horizon, and
 the same `normalized_dense` default reward mode. The one baked-in default is
 `control_mode="pd_ee_delta_pos"`, which every recording in this project used; it is a registration
@@ -26,6 +31,8 @@ from mani_skill.envs.tasks.tabletop.lift_peg_upright import LiftPegUprightEnv
 from mani_skill.envs.tasks.tabletop.place_sphere import PlaceSphereEnv
 from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
 from mani_skill.utils.registration import REGISTERED_ENVS, register_env
+
+from custom_maniskill_tasks.lighting import LightingMixin
 
 CONTROL_MODE = "pd_ee_delta_pos"
 
@@ -65,15 +72,15 @@ class FullHorizonMixin:
 @register_env(
     "PushCube-v1.1", max_episode_steps=_horizon("PushCube-v1"), control_mode=CONTROL_MODE
 )
-class PushCubeFullHorizonEnv(FullHorizonMixin, PushCubeEnv):
-    """PushCube-v1 with no early termination -- see `FullHorizonMixin`."""
+class PushCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PushCubeEnv):
+    """PushCube-v1 with no early termination and a `lighting` kwarg."""
 
 
 @register_env(
     "PlaceSphere-v1.1", max_episode_steps=_horizon("PlaceSphere-v1"), control_mode=CONTROL_MODE
 )
-class PlaceSphereFullHorizonEnv(FullHorizonMixin, PlaceSphereEnv):
-    """PlaceSphere-v1 with no early termination -- see `FullHorizonMixin`."""
+class PlaceSphereFullHorizonEnv(FullHorizonMixin, LightingMixin, PlaceSphereEnv):
+    """PlaceSphere-v1 with no early termination and a `lighting` kwarg."""
 
 
 @register_env(
@@ -81,5 +88,5 @@ class PlaceSphereFullHorizonEnv(FullHorizonMixin, PlaceSphereEnv):
     max_episode_steps=_horizon("LiftPegUpright-v1"),
     control_mode=CONTROL_MODE,
 )
-class LiftPegUprightFullHorizonEnv(FullHorizonMixin, LiftPegUprightEnv):
-    """LiftPegUpright-v1 with no early termination -- see `FullHorizonMixin`."""
+class LiftPegUprightFullHorizonEnv(FullHorizonMixin, LightingMixin, LiftPegUprightEnv):
+    """LiftPegUpright-v1 with no early termination and a `lighting` kwarg."""

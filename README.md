@@ -29,6 +29,9 @@ scene, dynamics, reward and success predicate are the stock task's, asserted in
 `tests/test_tasks.py`. `control_mode` defaults to the `pd_ee_delta_pos` every recording used, and an
 explicit `gym.make(..., control_mode=...)` still wins.
 
+These ids also take a `lighting` kwarg (see [Lighting](#lighting)), which the stock `-v1` ids do
+not.
+
 ```python
 import custom_maniskill_tasks  # noqa: F401  -- registers the ids
 import gymnasium as gym
@@ -52,6 +55,7 @@ env = make_env(
     obs_mode="rgb",
     control_mode="pd_ee_delta_pos",
     camera_view="wrist",     # "default" | "focused" | "wrist"
+    lighting="default",      # "default" | "dim" | "bright" | "warm" | "cool" | "side" | "random"
     camera_resolution=224,
     frame_skip=3,            # one step takes 3 concatenated actions
     n_frames=2,              # observations are the last 2 (macro) frames, stacked
@@ -105,6 +109,40 @@ Two caveats inherited from ManiSkill:
 - `camera_resolution` applies to the default view too, where `ManiSkillTask.make_env` used to leave
   ManiSkill's own 128. Pass `camera_resolution=None` to reproduce that.
 
+## Lighting
+
+`lighting` picks the condition the scene is rendered under, for evaluating a policy on a domain it
+was not trained on. Unlike `camera_view` it is an ordinary env kwarg on the `-v1.1` ids
+(`LightingMixin`), so `gym.make` records it in `env.spec.kwargs`, `RecordEpisode` writes it into the
+trajectory json, and a replay of that dataset rebuilds the same condition without being told —
+a shifted recording is distinguishable from a default-lit one on disk. Asking for a shift on a
+stock `-v1` id raises rather than silently doing nothing.
+
+| preset | what it is |
+| --- | --- |
+| `default` | `BaseEnv._load_lighting` transcribed: ambient `0.3`, two white directional lights |
+| `dim` / `bright` | the same lighting at half / one-and-a-half times the level |
+| `warm` / `cool` | the same geometry and roughly the same exposure, under a colour cast |
+| `side` | the key light crossed to the other side and raked lower, so shading falls the other way |
+| `random` | one condition drawn per parallel env — training-time domain randomization |
+
+A dict of the same shape as `LightingConfig` is accepted wherever a preset name is, for a one-off
+condition; it stays json-serializable, so it still records and replays. Unknown preset names and
+misspelled config keys raise before the env is built, because a shift that quietly did not happen
+looks exactly like a policy that is robust to it.
+
+`lighting="default"` is not merely close to the stock lighting, it is the stock lighting: the
+preset reproduces `BaseEnv`'s numbers down to the shadow parameters, it is not passed to `gym.make`
+at all, and `tests/test_lighting.py::test_default_is_byte_identical` asserts the rendered frame is
+unchanged. That matters because every dataset here was recorded under it, and a policy evaluated at
+`default` has to be looking at the same scene its training frames came from.
+
+One caveat, inherited from where ManiSkill loads lighting: `_load_lighting` runs only inside
+`_reconfigure`, so `random` draws once per env at construction (off ManiSkill's fixed `2022 + i`
+seeds) and holds it — the same `num_envs` conditions every run, and a reset seed does not move
+them. `reconfiguration_freq=1` redraws each reset at the cost of rebuilding the scene. To measure
+performance across conditions, build the env once per named preset instead.
+
 ## FrameSkip and FrameStack
 
 `FrameSkip(frame_skip=k)` makes the action space the concatenation of the next `k` primitive
@@ -131,12 +169,13 @@ motion from it. `tests/test_make_env.py::test_image_frames_are_not_aliased` guar
 
 ## Tests
 
-No pytest in the project environment, so both files run standalone:
+No pytest in the project environment, so the files run standalone:
 
 ```bash
 python tests/test_wrappers.py   # wrapper semantics against a fake env, no simulator
 python tests/test_tasks.py      # the -v1.1 ids: registration, and what they do/don't change
 python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_skip equivalence
+python tests/test_lighting.py   # presets: default parity, that each shift shows, per-env draws
 ```
 
 `test_wrappers.py` covers what the simulator cannot show: staggered episode ends across a batch

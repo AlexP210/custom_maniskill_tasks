@@ -17,6 +17,13 @@ from custom_maniskill_tasks.cameras import (
     canonical_camera_view,
     check_camera_view,
 )
+from custom_maniskill_tasks.lighting import (
+    DEFAULT_LIGHTING,
+    DEFAULT_LIGHTING_PRESET,
+    canonical_lighting,
+    check_lighting,
+    supports_lighting,
+)
 from custom_maniskill_tasks.wrappers import FrameSkip, FrameStack, IgnoreTerminations
 
 TASKS_IN_USE = (
@@ -43,6 +50,7 @@ def make_env(
     control_mode: str | None = "pd_ee_delta_pos",
     num_envs: int = 1,
     camera_view: str = "default",
+    lighting: str | dict = DEFAULT_LIGHTING_PRESET,
     camera_resolution: int | None = DEFAULT_CAMERA_RESOLUTION,
     wrist_only: bool = True,
     focused_camera_uid: str = FOCUSED_CAMERA_UID,
@@ -79,6 +87,14 @@ def make_env(
             means "whatever the task id already defaults to" and is not forwarded, since
             `gym.make(control_mode=None)` would override a registration default (the `-v1.1` ids
             carry one) rather than defer to it.
+        lighting: which lighting condition the scene is rendered under -- a name from
+            `LIGHTING_PRESETS` ("default" is the stock lighting every dataset here was recorded
+            with; "dim", "bright", "warm", "cool" and "side" are named shifts away from it, and
+            "random" draws one condition per parallel env), or a config dict for a one-off
+            condition. Only the project's own `-v1.1` ids support it. It is a real env kwarg, so
+            a non-default condition is recorded into any trajectory collected through it; a
+            "default" one is not passed at all, leaving existing configs' recorded metadata
+            byte-identical to what they produced before this argument existed.
         camera_view: which camera the observations come from -- "default" (the task's own camera,
             also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
             workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).
@@ -112,12 +128,22 @@ def make_env(
             builds, ...
     """
     view = canonical_camera_view(camera_view)
+    lighting_config = canonical_lighting(lighting)
 
     sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid)
     sensor_configs.update(env_kwargs.pop("sensor_configs", {}) or {})
 
     if control_mode is not None:
         env_kwargs["control_mode"] = control_mode
+
+    if lighting_config != DEFAULT_LIGHTING:
+        if not supports_lighting(task_name):
+            raise ValueError(
+                f"lighting={lighting!r} was asked for, but {task_name} is not one of this "
+                f"project's own task ids and its class takes no `lighting` kwarg. Use the "
+                f"corresponding -v1.1 id (see `TASKS_IN_USE`), which does."
+            )
+        env_kwargs["lighting"] = lighting
 
     with camera_view_applied(view, task_name, wrist_only=wrist_only):
         env = gym.make(
@@ -130,6 +156,7 @@ def make_env(
             **env_kwargs,
         )
     check_camera_view(env, view, focused_camera_uid)
+    check_lighting(env, lighting_config)
 
     if ignore_terminations:
         env = IgnoreTerminations(env)

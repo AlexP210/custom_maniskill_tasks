@@ -1,0 +1,216 @@
+"""Lighting presets against the real simulator: `python tests/test_lighting.py`.
+
+Everything here runs on physx_cpu at num_envs=1, for the reason `test_make_env.py` gives: sapien
+can only enable GPU PhysX once per process. That rules out building a randomizing preset, whose
+whole point is one condition per parallel env, so the draw itself is tested against the batched
+rng directly and the scene it would build against a stand-in scene.
+
+The test that matters most is `test_default_is_byte_identical`: every dataset in this project was
+recorded under `BaseEnv`'s own lighting, so `lighting="default"` has to be indistinguishable from
+not having this feature at all.
+"""
+
+import json
+
+import numpy as np
+import torch
+
+from mani_skill.envs.utils.randomization.batched_rng import BatchedRNG
+
+from custom_maniskill_tasks import (
+    DEFAULT_LIGHTING,
+    LIGHTING_PRESETS,
+    LightingConfig,
+    apply_lighting,
+    canonical_lighting,
+    check_lighting,
+    make_env,
+)
+
+TASK = "PushCube-v1.1"
+STOCK_TASK = "PushCube-v1"
+
+
+def _frame(**kwargs):
+    """The rendered reset frame of a freshly built env, plus what `gym.make` recorded."""
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", **kwargs)
+    env.reset(seed=7)
+    image = env.render()
+    image = np.asarray(image.cpu() if isinstance(image, torch.Tensor) else image)
+    spec_kwargs = dict(env.unwrapped.spec.kwargs)
+    env.close()
+    return image, spec_kwargs
+
+
+def test_default_is_byte_identical():
+    """`lighting="default"` renders the same pixels as an env built before `lighting` existed.
+
+    And it stays out of the env kwargs, so a recording made through it carries the same metadata
+    it always did -- an existing dataset must not become distinguishable from a new one.
+    """
+    baseline, baseline_kwargs = _frame()
+    explicit, explicit_kwargs = _frame(lighting="default")
+    assert np.array_equal(baseline, explicit), "the default preset is not the stock lighting"
+    assert "lighting" not in baseline_kwargs
+    assert "lighting" not in explicit_kwargs, "a default condition should not reach gym.make"
+
+
+def test_every_preset_shifts_the_image():
+    """A named shift has to actually change what the camera sees, and say so in the env kwargs."""
+    baseline, _ = _frame()
+    for name in LIGHTING_PRESETS:
+        if LIGHTING_PRESETS[name].randomization is not None:
+            continue  # needs one sub-scene per env; see the module docstring
+        if name == "default":
+            continue
+        image, spec_kwargs = _frame(lighting=name)
+        difference = np.abs(image.astype(np.int16) - baseline.astype(np.int16)).mean()
+        assert difference > 1.0, f"preset {name!r} barely changes the image ({difference:.3f})"
+        assert spec_kwargs["lighting"] == name, f"preset {name!r} was not recorded in env kwargs"
+
+
+def test_unknown_conditions_are_rejected_before_the_env_is_built():
+    """A misspelling has to raise, not fall through to the unshifted scene."""
+    for bad, expected in [
+        ("dimm", "Unknown lighting preset"),
+        ({"ambient": [1, 1, 1]}, "missing ['lights']"),
+        ({"ambient": [1, 1, 1], "lights": [], "randomization": None}, "non-empty"),
+        (
+            {"ambient": [1, 1, 1], "lights": [{"direction": [0, 0, -1], "colour": [1, 1, 1]}]},
+            "unknown keys ['colour']",
+        ),
+        ({"ambient": [1, 1], "lights": [{"direction": [0, 0, -1], "color": [1, 1, 1]}]}, "3 components"),
+    ]:
+        try:
+            canonical_lighting(bad)
+        except (ValueError, TypeError) as error:
+            assert expected in str(error), f"{bad!r} raised {error!r}, expected {expected!r}"
+        else:
+            raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_a_task_without_the_mixin_says_so():
+    """Stock ids take no `lighting` kwarg, so asking for a shift on one has to fail loudly."""
+    try:
+        make_env(STOCK_TASK, lighting="dim", num_envs=1, sim_backend="physx_cpu")
+    except ValueError as error:
+        assert "takes no `lighting` kwarg" in str(error)
+    else:
+        raise AssertionError("a stock -v1 id accepted a lighting shift")
+
+    # but the default condition is not a shift, so it must not lock stock ids out
+    env = make_env(STOCK_TASK, lighting="default", num_envs=1, sim_backend="physx_cpu")
+    assert "lighting" not in env.unwrapped.spec.kwargs
+    env.close()
+
+
+def test_dict_conditions_reach_the_scene_and_survive_json():
+    """A one-off condition builds, and is still readable in a recorded trajectory's metadata."""
+    spec = {
+        "ambient": [0.05, 0.05, 0.08],
+        "lights": [{"direction": [0.2, -1.0, -0.6], "color": [1.4, 1.2, 0.9]}],
+    }
+    env = make_env(TASK, lighting=spec, num_envs=1, sim_backend="physx_cpu")
+    scene = env.unwrapped.scene.sub_scenes[0]
+    ambient = np.asarray(scene.render_system.ambient_light)[:3]
+    lights = sum(entity.name == "directional_light" for entity in scene.entities)
+    assert np.allclose(ambient, spec["ambient"], atol=1e-5), ambient
+    assert lights == 1, f"expected the config's one light, found {lights}"
+    assert env.unwrapped.lighting == canonical_lighting(spec)
+    assert json.loads(json.dumps(env.unwrapped.spec.kwargs))["lighting"] == spec
+    env.close()
+
+
+def test_check_lighting_catches_a_scene_lit_by_something_else():
+    """The guard `make_env` runs after the build, against a condition the scene does not have."""
+    env = make_env(TASK, lighting="dim", num_envs=1, sim_backend="physx_cpu")
+    check_lighting(env, LIGHTING_PRESETS["dim"])  # the truth: must not raise
+    try:
+        check_lighting(env, LIGHTING_PRESETS["bright"])
+    except ValueError as error:
+        assert "ambient" in str(error)
+    else:
+        raise AssertionError("check_lighting accepted the wrong condition")
+    env.close()
+
+
+class _StandInScene:
+    """The two calls `apply_lighting` makes, recorded rather than rendered."""
+
+    def __init__(self, num_scenes, parallel_in_single_scene=False):
+        self.parallel_in_single_scene = parallel_in_single_scene
+        self.sub_scenes = [type("S", (), {"render_system": type("R", (), {})()})() for _ in range(num_scenes)]
+        self.lights = []
+
+    def set_ambient_light(self, color):
+        for scene in self.sub_scenes:
+            scene.render_system.ambient_light = color
+
+    def add_directional_light(self, direction, color, scene_idxs=None, **kwargs):
+        self.lights.append((tuple(direction), tuple(color), scene_idxs))
+
+
+def test_randomization_draws_one_condition_per_env():
+    """Per parallel env, inside the configured ranges, and reproducible from the episode seeds."""
+    config = LIGHTING_PRESETS["random"]
+    num_envs = 4
+
+    def build():
+        scene = _StandInScene(num_envs)
+        rng = BatchedRNG.from_seeds([2022 + i for i in range(num_envs)])
+        apply_lighting(scene, config, enable_shadow=False, episode_rng=rng)
+        return scene
+
+    scene = build()
+    ambients = [tuple(s.render_system.ambient_light) for s in scene.sub_scenes]
+    assert len(set(ambients)) == num_envs, f"envs share a condition: {ambients}"
+    assert len(scene.lights) == num_envs * len(config.lights)
+    assert {light[2][0] for light in scene.lights} == set(range(num_envs)), "lights are not per-env"
+
+    low, high = config.randomization.ambient
+    tint_low, tint_high = config.randomization.tint
+    for ambient in ambients:
+        for channel, base in zip(ambient, DEFAULT_LIGHTING.ambient):
+            assert base * low * tint_low - 1e-9 <= channel <= base * high * tint_high + 1e-9
+
+    again = [tuple(s.render_system.ambient_light) for s in build().sub_scenes]
+    assert again == ambients, "the same episode seeds drew different lighting"
+
+
+def test_randomization_refuses_a_single_shared_scene():
+    """One sapien scene cannot hold one condition per env, and must not pretend to."""
+    scene = _StandInScene(4, parallel_in_single_scene=True)
+    rng = BatchedRNG.from_seeds([2022 + i for i in range(4)])
+    try:
+        apply_lighting(scene, LIGHTING_PRESETS["random"], enable_shadow=False, episode_rng=rng)
+    except ValueError as error:
+        assert "parallel_in_single_scene" in str(error)
+    else:
+        raise AssertionError("a randomizing config was accepted in a single shared scene")
+
+
+def test_fixed_conditions_light_every_env_the_same():
+    """No draws, no per-env split: a named preset is one condition, which is what makes it a name."""
+    scene = _StandInScene(3)
+    apply_lighting(scene, LIGHTING_PRESETS["side"], enable_shadow=False)
+    assert len({tuple(s.render_system.ambient_light) for s in scene.sub_scenes}) == 1
+    assert all(light[2] is None for light in scene.lights), "a fixed condition drew per-env lights"
+    assert len(scene.lights) == len(LIGHTING_PRESETS["side"].lights)
+
+
+if __name__ == "__main__":
+    tests = [
+        test_unknown_conditions_are_rejected_before_the_env_is_built,
+        test_randomization_draws_one_condition_per_env,
+        test_randomization_refuses_a_single_shared_scene,
+        test_fixed_conditions_light_every_env_the_same,
+        test_default_is_byte_identical,
+        test_every_preset_shifts_the_image,
+        test_a_task_without_the_mixin_says_so,
+        test_dict_conditions_reach_the_scene_and_survive_json,
+        test_check_lighting_catches_a_scene_lit_by_something_else,
+    ]
+    for test in tests:
+        test()
+        print(f"ok  {test.__name__}")
+    print(f"\n{len(tests)} passed")
