@@ -7,7 +7,10 @@ the directional lights, and the ranges a randomizing condition draws from.
 The `"default"` preset is not a choice -- it is `BaseEnv._load_lighting` transcribed, which is
 what every dataset in this project was rendered under. Treat those numbers as data. The other
 presets are deliberate *shifts* away from it, meant to be named in an experiment ("evaluated under
-`dim`") rather than tuned per run, so a reported number says which condition produced it.
+`dim`") rather than tuned per run, so a reported number says which condition produced it. Several
+have a more extreme `"very-<preset>"` sibling, and any of these shift names can be joined with
+`"+"` (e.g. `"very-dim+very-warm+side"`) to stack their effects on top of one another; see
+`canonical_lighting`.
 
 Applied through `LightingMixin` on the registered `-v1.1` task classes (see `tasks`) rather than
 around the `gym.make` call the way the camera views are. That makes `lighting` an ordinary env
@@ -21,8 +24,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Callable
 
 import numpy as np
+import sapien
 
 from mani_skill import logger
 from mani_skill.envs.sapien_env import BaseEnv
@@ -67,8 +72,23 @@ class LightingRandomization:
 
 
 @dataclass(frozen=True)
+class SceneProp:
+    """One static box, visual only, added to the scene as part of a lighting condition.
+
+    Not a physics object -- no collision shape, so it can never obstruct the robot or the task
+    regardless of where it sits. Its entire purpose is to give a directional light something to
+    cast a shadow of: a light itself is invisible, so a preset built around `shadow=True` needs an
+    occluder in the scene before it reads as anything more than a slightly darker render.
+    """
+
+    position: Color
+    half_size: Color
+    color: Color = (0.25, 0.25, 0.25)
+
+
+@dataclass(frozen=True)
 class LightingConfig:
-    """A complete lighting condition: what `_load_lighting` will build.
+    """A complete lighting condition: what `_load_lighting` (and `_load_scene`) will build.
 
     `randomization=None` is a fixed condition -- every parallel env is lit identically and the
     condition is fully described by the preset name. With a `LightingRandomization` each parallel
@@ -79,6 +99,7 @@ class LightingConfig:
     ambient: Color
     lights: tuple[DirectionalLight, ...]
     randomization: LightingRandomization | None = None
+    props: tuple[SceneProp, ...] = ()
 
 
 DEFAULT_AMBIENT: Color = (0.3, 0.3, 0.3)
@@ -117,23 +138,116 @@ def _tinted(config: LightingConfig, tint: Color) -> LightingConfig:
     )
 
 
+def _sided(config: LightingConfig) -> LightingConfig:
+    """`config` with the key light crossed to the other side, raking lower.
+
+    Shading (and, under `enable_shadow`, shadows) then falls the opposite way at the same
+    exposure. Only ever touches `lights[0]`, so it composes with a tint effect regardless of
+    which runs first.
+    """
+    return replace(
+        config,
+        lights=(
+            replace(config.lights[0], direction=(-1.0, -1.0, -0.35)),
+            *config.lights[1:],
+        ),
+    )
+
+
+def _tint_effect(tint: Color) -> Callable[[LightingConfig], LightingConfig]:
+    return lambda config: _tinted(config, tint)
+
+
+_SHADOW_CASTER = (
+    # a floor lamp with a broad overhead shade: a thin pole and a wide flat panel, planted off to
+    # the side of the table (see `LightingMixin._load_scene`) where it is nowhere near the robot's
+    # own reach and well outside the wrist camera's fov. The key light travels in direction
+    # (1, 1, -1), so a point at height h casts its shadow (h, h) away horizontally -- the pole
+    # position is chosen so that offset lands the shade's shadow on the patch of table the wrist
+    # camera looks down at, which is the one place `shadow=True` alone never reaches (see
+    # `_shadows`'s docstring: the robot's own shadow rarely falls under its own wrist camera).
+    # The shade also has to be *wide*: a directional light's shadow is the same size as the object
+    # casting it regardless of distance, so a small occluder only darkens a small patch, easy to
+    # miss if the gripper is not exactly where the aim assumed. Wide enough here to blanket the
+    # wrist camera's field of view with margin for the gripper having moved.
+    SceneProp(position=(-0.5, -0.6, 0.3), half_size=(0.035, 0.035, 0.3)),
+    SceneProp(position=(-0.5, -0.6, 0.65), half_size=(0.3, 0.3, 0.05)),
+)
+
+
+def _shadows(config: LightingConfig) -> LightingConfig:
+    """`config` with every light that follows `enable_shadow` (`shadow=None`) pinned to cast one,
+    plus an occluder in the scene for it to cast.
+
+    Ordinarily whether the key light casts a shadow is a session setting -- the env's
+    `enable_shadow` kwarg, off by default -- so the same preset can render shadowed or not
+    depending on how the env was built. Here the *condition* decides instead, so the scene always
+    renders with those shadows regardless of what the caller passed. A light that already opts
+    out (`shadow=False`, the fill light's own choice) is left alone -- this forces shadows on, it
+    does not turn the ones already off back on.
+
+    A shadow needs something to fall across, though: pinning `shadow=True` on a scene with
+    nothing but the robot and a cube mostly changes what the *robot* looks like (self-shadowing),
+    not what a downward-looking camera sees on the table -- the wrist camera especially, which
+    sits close enough above the workspace that the robot's own shadow rarely reaches it. Hence
+    `_SHADOW_CASTER`, added to the scene by `LightingMixin._load_scene` whenever it appears in
+    `props`.
+    """
+    return replace(
+        config,
+        lights=tuple(
+            replace(light, shadow=True) if light.shadow is None else light
+            for light in config.lights
+        ),
+        props=config.props + _SHADOW_CASTER,
+    )
+
+
+# One effect per stackable preset name, each a `LightingConfig -> LightingConfig` shift away from
+# whatever it is applied to. `LIGHTING_PRESETS` below is these applied once to `DEFAULT_LIGHTING`;
+# `canonical_lighting` applies a "+"-joined chain of them in sequence to the same starting point,
+# so "very-dim+very-warm+side" is not a name that has to be pre-declared to exist.
+_PRESET_EFFECTS: dict[str, Callable[[LightingConfig], LightingConfig]] = {
+    # exposure shifts: the scene is lit the same way, less or more of it
+    "dim": _tint_effect((0.5, 0.5, 0.5)),
+    "very-dim": _tint_effect((0.25, 0.25, 0.25)),
+    "bright": _tint_effect((1.5, 1.5, 1.5)),
+    "very-bright": _tint_effect((2.25, 2.25, 2.25)),
+    # colour-temperature shifts: same geometry and roughly the same exposure, different cast
+    "warm": _tint_effect((1.15, 0.9, 0.65)),
+    "very-warm": _tint_effect((1.3, 0.8, 0.4)),
+    "cool": _tint_effect((0.7, 0.85, 1.2)),
+    "very-cool": _tint_effect((0.5, 0.75, 1.4)),
+    # a geometric shift: no "very" variant, there being only one other side to cross to
+    "side": _sided,
+    # a shadow shift: no "very" variant either, a shadow being either cast or not
+    "shadows": _shadows,
+}
+
+
+def _stacked(name: str) -> LightingConfig:
+    """`name` as a "+"-joined chain of `_PRESET_EFFECTS`, applied in order to `DEFAULT_LIGHTING`.
+
+    Each effect is a plain function of a `LightingConfig`, so stacking them is just folding: the
+    tint effects multiply together regardless of order, and `side` only ever touches `lights[0]`'s
+    direction, so "very-dim+very-warm+side" and "side+very-warm+very-dim" build the same config.
+    """
+    parts = name.split("+")
+    config = DEFAULT_LIGHTING
+    for part in parts:
+        effect = _PRESET_EFFECTS.get(part)
+        if effect is None:
+            raise ValueError(
+                f"Unknown lighting preset {part!r} in stacked preset {name!r}; a stack can only "
+                f"combine {', '.join(repr(preset) for preset in _PRESET_EFFECTS)}"
+            )
+        config = effect(config)
+    return config
+
+
 LIGHTING_PRESETS: dict[str, LightingConfig] = {
     "default": DEFAULT_LIGHTING,
-    # exposure shifts: the scene is lit the same way, less or more of it
-    "dim": _tinted(DEFAULT_LIGHTING, (0.5, 0.5, 0.5)),
-    "bright": _tinted(DEFAULT_LIGHTING, (1.5, 1.5, 1.5)),
-    # colour-temperature shifts: same geometry and roughly the same exposure, different cast
-    "warm": _tinted(DEFAULT_LIGHTING, (1.15, 0.9, 0.65)),
-    "cool": _tinted(DEFAULT_LIGHTING, (0.7, 0.85, 1.2)),
-    # a geometric shift: the key light crosses to the other side and rakes lower, so shading
-    # (and, under `enable_shadow`, shadows) falls the opposite way at the same exposure
-    "side": replace(
-        DEFAULT_LIGHTING,
-        lights=(
-            replace(DEFAULT_LIGHTING.lights[0], direction=(-1.0, -1.0, -0.35)),
-            DEFAULT_LIGHTING.lights[1],
-        ),
-    ),
+    **{name: effect(DEFAULT_LIGHTING) for name, effect in _PRESET_EFFECTS.items()},
     # training-time domain randomization: each parallel env draws its own condition, held for
     # the life of the env unless it reconfigures -- see `apply_lighting`
     "random": replace(
@@ -148,7 +262,9 @@ LIGHTING_PRESETS: dict[str, LightingConfig] = {
 }
 """The named conditions, and the whole interface: a preset name is what an experiment reports and
 what a recording carries in its metadata. A dict of the same shape as `LightingConfig` is accepted
-wherever a name is, for a one-off condition that has not earned a name yet."""
+wherever a name is, for a one-off condition that has not earned a name yet -- and so is a
+"+"-joined chain of these names (e.g. `"very-dim+very-warm+side"`), for a stack that has not
+earned one either; see `canonical_lighting`."""
 
 DEFAULT_LIGHTING_PRESET = "default"
 
@@ -255,6 +371,11 @@ def lighting_config_from_dict(spec: Mapping) -> LightingConfig:
 def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConfig:
     """Resolve a preset name or a dict into a `LightingConfig`, rejecting unknown ones early.
 
+    A name is looked up in `LIGHTING_PRESETS` first, so every named condition (`"default"`,
+    `"random"` included) resolves exactly as it always has. Failing that, a "+"-joined name (e.g.
+    `"very-dim+very-warm+side"`) is folded through `_stacked` instead of requiring every
+    combination to be pre-declared there.
+
     Worth doing before `gym.make` for the same reason `canonical_camera_view` is: a misspelled
     preset that fell through to "no override" would build a perfectly working env showing the
     unshifted scene, and nothing downstream would ever say so.
@@ -265,10 +386,14 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
         try:
             return LIGHTING_PRESETS[lighting]
         except KeyError:
-            raise ValueError(
-                f"Unknown lighting preset {lighting!r}, expected one of "
-                f"{', '.join(repr(name) for name in LIGHTING_PRESETS)}"
-            ) from None
+            pass
+        if "+" in lighting:
+            return _stacked(lighting)
+        raise ValueError(
+            f"Unknown lighting preset {lighting!r}, expected one of "
+            f"{', '.join(repr(name) for name in LIGHTING_PRESETS)}, or a \"+\"-joined stack of "
+            f"{', '.join(repr(name) for name in _PRESET_EFFECTS)}"
+        )
     if isinstance(lighting, Mapping):
         return lighting_config_from_dict(lighting)
     raise TypeError(
@@ -379,16 +504,37 @@ def apply_lighting(scene, config: LightingConfig, enable_shadow: bool, episode_r
             _add_light(scene, light, enable_shadow, scene_idxs=[scene_idx])
 
 
+def _add_scene_props(scene, props: tuple[SceneProp, ...]) -> None:
+    """Build `props` into `scene` as static, visual-only boxes. The body of `_load_scene`'s addon.
+
+    `build_static` with no collision shape added: invisible to physics, so a prop can never
+    obstruct the robot regardless of where it sits. `props` defaults to `()`, so this is a no-op
+    for every condition but the ones that ask for one (currently just `"shadows"`).
+    """
+    for i, prop in enumerate(props):
+        builder = scene.create_actor_builder()
+        builder.add_box_visual(
+            pose=sapien.Pose(p=[float(c) for c in prop.position]),
+            half_size=[float(c) for c in prop.half_size],
+            material=sapien.render.RenderMaterial(
+                base_color=[*(float(c) for c in prop.color), 1.0]
+            ),
+        )
+        builder.set_initial_pose(sapien.Pose(p=[0.0, 0.0, 0.0]))
+        builder.build_static(name=f"lighting_prop_{i}")
+
+
 class LightingMixin:
     """Gives a task a `lighting` kwarg naming the condition it renders under.
 
     Mixed in ahead of the task class, so its `_load_lighting` wins. That is what makes the shift
     reach a task at all, and also means a task that lights its own scene would be overridden
     rather than shifted -- `__init__` says so loudly if it finds one, since the result would look
-    like a lighting shift while actually being a different scene.
+    like a lighting shift while actually being a different scene. `_load_scene` is mixed in the
+    same way but *adds* to the task's own scene rather than replacing it -- see the method.
 
     The config is resolved and stored before `super().__init__`, because `BaseEnv.__init__`
-    reconfigures (and so calls `_load_lighting`) before it returns.
+    reconfigures (and so calls `_load_lighting` and `_load_scene`) before it returns.
     """
 
     def __init__(
@@ -428,6 +574,13 @@ class LightingMixin:
             enable_shadow=self.enable_shadow,
             episode_rng=self._batched_episode_rng,
         )
+
+    def _load_scene(self, options: dict):
+        # unlike `_load_lighting`, this adds to the task's own scene rather than replacing it --
+        # the task still builds its table, robot workspace and objects; a condition with `props`
+        # (currently just "shadows") gets its occluder added alongside them
+        super()._load_scene(options)
+        _add_scene_props(self.scene, self._lighting.props)
 
 
 def supports_lighting(task_name: str) -> bool:

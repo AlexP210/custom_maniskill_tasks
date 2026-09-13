@@ -89,12 +89,15 @@ def make_env(
             carry one) rather than defer to it.
         lighting: which lighting condition the scene is rendered under -- a name from
             `LIGHTING_PRESETS` ("default" is the stock lighting every dataset here was recorded
-            with; "dim", "bright", "warm", "cool" and "side" are named shifts away from it, and
-            "random" draws one condition per parallel env), or a config dict for a one-off
-            condition. Only the project's own `-v1.1` ids support it. It is a real env kwarg, so
-            a non-default condition is recorded into any trajectory collected through it; a
-            "default" one is not passed at all, leaving existing configs' recorded metadata
-            byte-identical to what they produced before this argument existed.
+            with; "dim", "bright", "warm", "cool", "side" and "shadows" are named shifts away
+            from it, each of "dim", "bright", "warm" and "cool" also has a more extreme
+            "very-<preset>" sibling, and "random" draws one condition per parallel env), a
+            "+"-joined stack of those shift names for a condition that combines several at once
+            (e.g. "very-dim+very-warm+side"), or a config dict for a one-off condition. Only the
+            project's own `-v1.1` ids support it. It is a real env kwarg, so a non-default
+            condition is recorded into any trajectory collected through it; a "default" one is not
+            passed at all, leaving existing configs' recorded metadata byte-identical to what they
+            produced before this argument existed.
         camera_view: which camera the observations come from -- "default" (the task's own camera,
             also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
             workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).

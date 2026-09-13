@@ -11,6 +11,7 @@ not having this feature at all.
 """
 
 import json
+from dataclasses import replace
 
 import numpy as np
 import torch
@@ -42,6 +43,16 @@ def _frame(**kwargs):
     return image, spec_kwargs
 
 
+def _hand_frame(**kwargs):
+    """The `hand_camera` observation of a freshly built env, wrist-mounted rather than rendered."""
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", **kwargs)
+    obs, _ = env.reset(seed=7)
+    image = obs["sensor_data"]["hand_camera"]["rgb"]
+    image = np.asarray(image.cpu() if isinstance(image, torch.Tensor) else image)[0]
+    env.close()
+    return image
+
+
 def test_default_is_byte_identical():
     """`lighting="default"` renders the same pixels as an env built before `lighting` existed.
 
@@ -67,6 +78,79 @@ def test_every_preset_shifts_the_image():
         difference = np.abs(image.astype(np.int16) - baseline.astype(np.int16)).mean()
         assert difference > 1.0, f"preset {name!r} barely changes the image ({difference:.3f})"
         assert spec_kwargs["lighting"] == name, f"preset {name!r} was not recorded in env kwargs"
+
+
+def test_stacked_presets_compose():
+    """A "+"-joined stack folds its presets' effects together, order-independent, into the scene."""
+    stacked = canonical_lighting("very-dim+very-warm+side")
+    reordered = canonical_lighting("side+very-warm+very-dim")
+    assert stacked == reordered, "stacking is not order-independent"
+    assert stacked != LIGHTING_PRESETS["very-dim"], "the stack collapsed to just one of its parts"
+    assert stacked != canonical_lighting("very-dim+very-warm"), "'side' did not change the stack"
+
+    image, spec_kwargs = _frame(lighting="very-dim+very-warm+side")
+    baseline, _ = _frame()
+    difference = np.abs(image.astype(np.int16) - baseline.astype(np.int16)).mean()
+    assert difference > 1.0, f"stacked preset barely changes the image ({difference:.3f})"
+    assert spec_kwargs["lighting"] == "very-dim+very-warm+side", "the stack name was not recorded"
+
+
+def test_shadows_forces_only_the_lights_that_follow_enable_shadow():
+    """The preset pins whichever lights follow `enable_shadow`, leaving an opted-out one alone."""
+    config = LIGHTING_PRESETS["shadows"]
+    assert config.lights[0].shadow is True, "the key light was not forced to cast a shadow"
+    assert config.lights[1].shadow is False, "the fill light's own no-shadow choice was overridden"
+    assert config.ambient == DEFAULT_LIGHTING.ambient, "shadows changed more than the shadow flags"
+
+    # the env this preset builds always shows the shadow, even though `enable_shadow` defaults to
+    # False -- that default-off session setting is exactly what this preset overrides
+    image, _ = _frame(lighting="shadows")
+    baseline, _ = _frame()
+    difference = np.abs(image.astype(np.int16) - baseline.astype(np.int16)).mean()
+    assert difference > 1.0, f"shadows barely changes the image ({difference:.3f})"
+
+    stacked = canonical_lighting("shadows+side")
+    assert stacked.lights[0].shadow is True, "shadows did not survive stacking with side"
+    assert stacked.lights[0].direction == (-1.0, -1.0, -0.35), "side did not survive the stack"
+
+
+def test_shadows_prop_is_out_of_view_but_casts_onto_the_hand_camera():
+    """The occluder `shadows` adds to the scene sits out of frame, but its shadow does not.
+
+    The wrist camera sits close above the workspace looking straight down (see `cameras.py`), so
+    the robot's own shadow rarely reaches it -- forcing `shadow=True` alone barely changes what it
+    sees (self-shadowing on the fingers and the target's raised rim, no real shadow on the table).
+    `shadows` earns its name there because `LightingMixin._load_scene` also adds `_SHADOW_CASTER`.
+
+    The comparison has to isolate that occluder's own contribution rather than compare against the
+    true baseline: a first attempt at `_SHADOW_CASTER`'s placement passed a `shadow=True`-vs-
+    default comparison (self-shadowing alone is a measurable, if invisible-in-practice, change)
+    while its own shadow fell entirely outside the wrist camera's tiny field of view.
+    """
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", lighting="shadows")
+    scene = env.unwrapped.scene.sub_scenes[0]
+    prop_names = {entity.name for entity in scene.entities if "lighting_prop_" in entity.name}
+    assert prop_names, "no lighting_prop_* entity was built into the scene"
+    env.close()
+
+    shadow_without_prop = replace(LIGHTING_PRESETS["shadows"], props=())
+    with_prop = _hand_frame(lighting="shadows")
+    without_prop = _hand_frame(lighting=shadow_without_prop)
+    difference = np.abs(with_prop.astype(np.int16) - without_prop.astype(np.int16)).mean()
+    assert difference > 3.0, (
+        f"_SHADOW_CASTER barely changes the hand_camera image on its own ({difference:.3f}) -- "
+        "its shadow is likely missing the wrist camera's field of view"
+    )
+
+
+def test_unknown_preset_in_a_stack_is_rejected():
+    """A misspelling inside a stack has to raise, same as a misspelled lone preset name."""
+    try:
+        canonical_lighting("very-dim+bogus")
+    except ValueError as error:
+        assert "bogus" in str(error) and "very-dim+bogus" in str(error)
+    else:
+        raise AssertionError("a stack with an unknown preset name was accepted")
 
 
 def test_unknown_conditions_are_rejected_before_the_env_is_built():
@@ -206,6 +290,10 @@ if __name__ == "__main__":
         test_fixed_conditions_light_every_env_the_same,
         test_default_is_byte_identical,
         test_every_preset_shifts_the_image,
+        test_stacked_presets_compose,
+        test_shadows_forces_only_the_lights_that_follow_enable_shadow,
+        test_shadows_prop_is_out_of_view_but_casts_onto_the_hand_camera,
+        test_unknown_preset_in_a_stack_is_rejected,
         test_a_task_without_the_mixin_says_so,
         test_dict_conditions_reach_the_scene_and_survive_json,
         test_check_lighting_catches_a_scene_lit_by_something_else,
