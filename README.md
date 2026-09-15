@@ -11,13 +11,14 @@ pip install -e environments/custom_maniskill_tasks
 
 ## Registered task ids
 
-Importing the package registers the three ids this project's datasets are collected with:
+Importing the package registers the ids this project's datasets are collected with:
 
 | id | is |
 | --- | --- |
 | `PushCube-v1.1` | `PushCube-v1` with no early termination |
 | `PlaceSphere-v1.1` | `PlaceSphere-v1` with no early termination |
 | `LiftPegUpright-v1.1` | `LiftPegUpright-v1` with no early termination |
+| `PokeCube-v1.1` | `PokeCube-v1` with no early termination |
 
 "No early termination" is the one environment-level convention
 [tools/ppo_stages_fast.py](../../tools/ppo_stages_fast.py) collected every offline dataset under

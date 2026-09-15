@@ -29,6 +29,7 @@ import torch
 
 from mani_skill.envs.tasks.tabletop.lift_peg_upright import LiftPegUprightEnv
 from mani_skill.envs.tasks.tabletop.place_sphere import PlaceSphereEnv
+from mani_skill.envs.tasks.tabletop.poke_cube import PokeCubeEnv
 from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
 from mani_skill.utils.registration import REGISTERED_ENVS, register_env
 
@@ -40,6 +41,7 @@ FULL_HORIZON_TASKS = {
     "PushCube-v1.1": "PushCube-v1",
     "PlaceSphere-v1.1": "PlaceSphere-v1",
     "LiftPegUpright-v1.1": "LiftPegUpright-v1",
+    "PokeCube-v1.1": "PokeCube-v1",
 }
 """Each registered variant and the stock task it derives from. The `-v1.1` suffix is not a
 gymnasium version (gymnasium only parses integer versions, so these are unversioned ids whose name
@@ -90,3 +92,10 @@ class PlaceSphereFullHorizonEnv(FullHorizonMixin, LightingMixin, PlaceSphereEnv)
 )
 class LiftPegUprightFullHorizonEnv(FullHorizonMixin, LightingMixin, LiftPegUprightEnv):
     """LiftPegUpright-v1 with no early termination and a `lighting` kwarg."""
+
+
+@register_env(
+    "PokeCube-v1.1", max_episode_steps=_horizon("PokeCube-v1"), control_mode=CONTROL_MODE
+)
+class PokeCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PokeCubeEnv):
+    """PokeCube-v1 with no early termination and a `lighting` kwarg."""

@@ -1,4 +1,4 @@
-"""Render a 3x3 grid of env screenshots: one column per task, and three rows -- the episode's
+"""Render a grid of env screenshots: one column per task, and three rows -- the episode's
 start state, a goal state sampled for that same episode, and the wrist camera the policy observes.
 
     python environment_screenshots.py [--out PATH] [--seed N]
@@ -26,6 +26,7 @@ TASKS = (
     ("PushCube-v1.1", "PushCube-v1.1"),
     ("LiftPegUpright-v1.1", "LiftPegUpright-v1.1"),
     ("PlaceSphere-v1.1", "PlaceSphere-v1.1"),
+    ("PokeCube-v1.1", "PokeCube-v1.1"),
 )
 
 ROW_TITLES = ("Start", "Goal", "Visual Obs")
@@ -104,10 +105,33 @@ def _place_sphere_goal(base_env, rng):
     )
 
 
+def _poke_cube_goal(base_env, rng):
+    """Cube resting anywhere inside the goal disk, drawn uniformly over it like PushCube's.
+
+    Success here is `is_cube_placed & is_robot_static`, so unlike PushCube the arm matters: the
+    frame is taken straight after a reset, where the Panda is settled and `is_static(0.2)` holds,
+    and nothing is stepped before rendering. The peg is left where the reset put it -- the goal
+    is a cube position, and the task says nothing about where the tool ends up.
+    """
+    goal_xy = base_env.goal_region.pose.p[0, :2].cpu().numpy()
+    radius = base_env.goal_radius * np.sqrt(rng.random())
+    angle = rng.uniform(0, 2 * np.pi)
+    _set_pose(
+        base_env.cube,
+        base_env,
+        [
+            float(goal_xy[0] + radius * np.cos(angle)),
+            float(goal_xy[1] + radius * np.sin(angle)),
+            base_env.cube_half_size,
+        ],
+    )
+
+
 GOAL_STATES = {
     "PushCube-v1.1": _push_cube_goal,
     "LiftPegUpright-v1.1": _lift_peg_upright_goal,
     "PlaceSphere-v1.1": _place_sphere_goal,
+    "PokeCube-v1.1": _poke_cube_goal,
 }
 """How to put each task into a goal state, by task id. Each entry poses the task's own objects
 rather than rolling out a policy, and `render_episode` checks the result against the task's

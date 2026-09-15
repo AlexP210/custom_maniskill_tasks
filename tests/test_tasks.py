@@ -95,7 +95,7 @@ def test_dynamics_reward_and_success_are_unchanged():
     stock.close()
 
 
-def test_all_three_work_through_make_env():
+def test_every_id_works_through_make_env():
     for task in FULL_HORIZON_TASKS:
         env = make_env(task, obs_mode="rgb", camera_view="focused", camera_resolution=64,
                        frame_skip=2, n_frames=2)
@@ -116,7 +116,7 @@ if __name__ == "__main__":
         test_ids_are_registered_with_both_registries,
         test_plain_gym_make_needs_no_extra_flags,
         test_dynamics_reward_and_success_are_unchanged,
-        test_all_three_work_through_make_env,
+        test_every_id_works_through_make_env,
     ]
     for test in tests:
         test()

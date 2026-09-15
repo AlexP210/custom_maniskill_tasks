@@ -27,17 +27,19 @@ from custom_maniskill_tasks.lighting import (
 from custom_maniskill_tasks.wrappers import FrameSkip, FrameStack, IgnoreTerminations
 
 TASKS_IN_USE = (
-    # the three this project's datasets are collected with: the stock tasks minus early
-    # termination, registered by importing this package (see `tasks`)
+    # the stock tasks minus early termination, registered by importing this package (see `tasks`);
+    # this project's datasets are collected with these
     "PushCube-v1.1",
     "PlaceSphere-v1.1",
     "LiftPegUpright-v1.1",
+    "PokeCube-v1.1",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",
     "PegInsertionSide-v1",
     "PlaceSphere-v1",
     "LiftPegUpright-v1",
+    "PokeCube-v1",
 )
 """The tasks this project has datasets and configs for. Documentation, not a restriction:
 `make_env` works for any registered ManiSkill task id."""
