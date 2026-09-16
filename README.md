@@ -19,6 +19,18 @@ Importing the package registers the ids this project's datasets are collected wi
 | `PlaceSphere-v1.1` | `PlaceSphere-v1` with no early termination |
 | `LiftPegUpright-v1.1` | `LiftPegUpright-v1` with no early termination |
 | `PokeCube-v1.1` | `PokeCube-v1` with no early termination |
+| `PickCube-v1.1` | `PickCube-v1` with no early termination |
+| `PickSingleYCB-v1.1` | `PickSingleYCB-v1` with no early termination |
+
+`PickSingleYCB-v1.1` is the one id whose scene is not fixed: the YCB object in it is drawn per
+parallel env at reconfiguration, and the stock task's own `reconfiguration_freq` default (1 at
+`num_envs=1`, so a new object every reset; 0 above it, so one draw held for the run) is carried
+over untouched. It also needs the YCB assets, which the variant declares exactly as the stock task
+does, so `gym.make` offers the download:
+
+```bash
+python -m mani_skill.utils.download_asset ycb
+```
 
 "No early termination" is the one environment-level convention
 [tools/ppo_stages_fast.py](../../tools/ppo_stages_fast.py) collected every offline dataset under

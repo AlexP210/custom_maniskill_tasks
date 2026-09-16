@@ -33,6 +33,8 @@ TASKS_IN_USE = (
     "PlaceSphere-v1.1",
     "LiftPegUpright-v1.1",
     "PokeCube-v1.1",
+    "PickCube-v1.1",
+    "PickSingleYCB-v1.1",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",

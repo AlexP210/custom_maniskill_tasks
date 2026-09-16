@@ -1,9 +1,9 @@
 """Central definitions of the ManiSkill tasks this project trains and plans on.
 
 Importing this package registers the task ids this project's datasets were collected with --
-`PushCube-v1.1`, `PlaceSphere-v1.1`, `LiftPegUpright-v1.1`, `PokeCube-v1.1`, the stock tasks with
-early termination removed (see `tasks`). They are then available to plain `gym.make`, not only
-to `make_env`.
+`PushCube-v1.1`, `PlaceSphere-v1.1`, `LiftPegUpright-v1.1`, `PokeCube-v1.1`, `PickCube-v1.1` and
+`PickSingleYCB-v1.1`, the stock tasks with early termination removed (see `tasks`). They are then
+available to plain `gym.make`, not only to `make_env`.
 
 `make_env` is the entry point; everything else is exported for the callers that build part of a
 stack themselves (a dataset replay that needs `sensor_configs` for `RecordEpisode`, an agent that
@@ -49,6 +49,8 @@ from custom_maniskill_tasks.tasks import (
     FULL_HORIZON_TASKS,
     FullHorizonMixin,
     LiftPegUprightFullHorizonEnv,
+    PickCubeFullHorizonEnv,
+    PickSingleYCBFullHorizonEnv,
     PlaceSphereFullHorizonEnv,
     PokeCubeFullHorizonEnv,
     PushCubeFullHorizonEnv,
@@ -86,6 +88,8 @@ __all__ = [
     "LightingRandomization",
     "LiftPegUprightFullHorizonEnv",
     "PandaHandCam",
+    "PickCubeFullHorizonEnv",
+    "PickSingleYCBFullHorizonEnv",
     "PlaceSphereFullHorizonEnv",
     "PokeCubeFullHorizonEnv",
     "PushCubeFullHorizonEnv",

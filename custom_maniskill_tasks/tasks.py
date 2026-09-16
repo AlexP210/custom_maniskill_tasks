@@ -28,6 +28,8 @@ from __future__ import annotations
 import torch
 
 from mani_skill.envs.tasks.tabletop.lift_peg_upright import LiftPegUprightEnv
+from mani_skill.envs.tasks.tabletop.pick_cube import PickCubeEnv
+from mani_skill.envs.tasks.tabletop.pick_single_ycb import PickSingleYCBEnv
 from mani_skill.envs.tasks.tabletop.place_sphere import PlaceSphereEnv
 from mani_skill.envs.tasks.tabletop.poke_cube import PokeCubeEnv
 from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
@@ -42,6 +44,8 @@ FULL_HORIZON_TASKS = {
     "PlaceSphere-v1.1": "PlaceSphere-v1",
     "LiftPegUpright-v1.1": "LiftPegUpright-v1",
     "PokeCube-v1.1": "PokeCube-v1",
+    "PickCube-v1.1": "PickCube-v1",
+    "PickSingleYCB-v1.1": "PickSingleYCB-v1",
 }
 """Each registered variant and the stock task it derives from. The `-v1.1` suffix is not a
 gymnasium version (gymnasium only parses integer versions, so these are unversioned ids whose name
@@ -51,6 +55,15 @@ happens to contain a dot) -- it reads as "our revision of -v1"."""
 def _horizon(base_task: str) -> int:
     """The stock task's registered time limit, so the variant cannot drift from it."""
     return REGISTERED_ENVS[base_task].max_episode_steps
+
+
+def _asset_download_ids(base_task: str) -> list[str]:
+    """The assets the stock task declares, so the variant prompts to fetch them too.
+
+    `register_env` records these and `gym.make` checks them, so a variant that dropped them would
+    fail deep inside the task's `__init__` (a missing json) instead of offering the download.
+    """
+    return REGISTERED_ENVS[base_task].asset_download_ids
 
 
 class FullHorizonMixin:
@@ -99,3 +112,26 @@ class LiftPegUprightFullHorizonEnv(FullHorizonMixin, LightingMixin, LiftPegUprig
 )
 class PokeCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PokeCubeEnv):
     """PokeCube-v1 with no early termination and a `lighting` kwarg."""
+
+
+@register_env(
+    "PickCube-v1.1", max_episode_steps=_horizon("PickCube-v1"), control_mode=CONTROL_MODE
+)
+class PickCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PickCubeEnv):
+    """PickCube-v1 with no early termination and a `lighting` kwarg."""
+
+
+@register_env(
+    "PickSingleYCB-v1.1",
+    max_episode_steps=_horizon("PickSingleYCB-v1"),
+    asset_download_ids=_asset_download_ids("PickSingleYCB-v1"),
+    control_mode=CONTROL_MODE,
+)
+class PickSingleYCBFullHorizonEnv(FullHorizonMixin, LightingMixin, PickSingleYCBEnv):
+    """PickSingleYCB-v1 with no early termination and a `lighting` kwarg.
+
+    The only one of these variants whose scene is not fixed: which YCB object is in it is drawn
+    per parallel env at reconfiguration, so the stock task defaults `reconfiguration_freq` to 1 at
+    `num_envs=1` (a new object every reset) and to 0 above it (one draw, held for the run). That
+    default is the task's own and is untouched here.
+    """
