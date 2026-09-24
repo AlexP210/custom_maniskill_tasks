@@ -95,8 +95,13 @@ def make_env(
             `LIGHTING_PRESETS` ("default" is the stock lighting every dataset here was recorded
             with; "dim", "bright", "warm", "cool", "side" and "shadows" are named shifts away
             from it, each of "dim", "bright", "warm" and "cool" also has a more extreme
-            "very-<preset>" sibling, and "random" draws one condition per parallel env), a
-            "+"-joined stack of those shift names for a condition that combines several at once
+            "very-<preset>" sibling, and "random" draws one condition per parallel env),
+            "bright-set-<ambient>-<lights>" to set the ambient and both lights' levels outright
+            (e.g. "bright-set-0.45-1.5"), "side-set-<amount>" to turn the key light that
+            fraction (0 to 1) of the way from "default"'s direction to "side"'s,
+            "warm-set-<amount>" / "cool-set-<amount>" to tint the lights that fraction of the way
+            along the blackbody curve from 6500 K to 2700 K / 12000 K (and past 1, up to 1.6:
+            about 2000 K / 24400 K), a "+"-joined stack of those shift names for a condition that combines several at once
             (e.g. "very-dim+very-warm+side"), or a config dict for a one-off condition. Only the
             project's own `-v1.1` ids support it. It is a real env kwarg, so a non-default
             condition is recorded into any trajectory collected through it; a "default" one is not

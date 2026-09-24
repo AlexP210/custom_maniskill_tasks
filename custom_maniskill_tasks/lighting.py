@@ -22,6 +22,7 @@ the outside would not be.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Callable
@@ -138,6 +139,10 @@ def _tinted(config: LightingConfig, tint: Color) -> LightingConfig:
     )
 
 
+SIDE_KEY_DIRECTION: Color = (-1.0, -1.0, -0.35)
+"""Where `side` puts the key light: crossed to the other side of the table and raking lower."""
+
+
 def _sided(config: LightingConfig) -> LightingConfig:
     """`config` with the key light crossed to the other side, raking lower.
 
@@ -145,17 +150,129 @@ def _sided(config: LightingConfig) -> LightingConfig:
     exposure. Only ever touches `lights[0]`, so it composes with a tint effect regardless of
     which runs first.
     """
+    return _with_key_direction(config, SIDE_KEY_DIRECTION)
+
+
+def _with_key_direction(config: LightingConfig, direction: Color) -> LightingConfig:
     return replace(
         config,
-        lights=(
-            replace(config.lights[0], direction=(-1.0, -1.0, -0.35)),
-            *config.lights[1:],
-        ),
+        lights=(replace(config.lights[0], direction=direction), *config.lights[1:]),
     )
+
+
+def _key_direction_towards_side(amount: float) -> Color:
+    """The key light direction `amount` of the way from the default's to `SIDE_KEY_DIRECTION`.
+
+    A slerp between the two, not a lerp: both lie in the vertical plane x == y, and the short arc
+    between them passes straight overhead, so equal steps in `amount` turn the light through equal
+    angles (about 13 degrees per 0.1). A lerp would bunch the steps up near the overhead point.
+    The two endpoints come back as the presets' own vectors rather than their normalized forms, so
+    `side-set-0` builds exactly `default` and `side-set-1` exactly `side`.
+    """
+    start = DEFAULT_LIGHTING.lights[0].direction
+    if amount == 0.0:
+        return start
+    if amount == 1.0:
+        return SIDE_KEY_DIRECTION
+    a = np.asarray(start) / np.linalg.norm(start)
+    b = np.asarray(SIDE_KEY_DIRECTION) / np.linalg.norm(SIDE_KEY_DIRECTION)
+    angle = np.arccos(np.clip(a @ b, -1.0, 1.0))
+    direction = (np.sin((1.0 - amount) * angle) * a + np.sin(amount * angle) * b) / np.sin(angle)
+    return tuple(float(component) for component in direction)
 
 
 def _tint_effect(tint: Color) -> Callable[[LightingConfig], LightingConfig]:
     return lambda config: _tinted(config, tint)
+
+
+def _levels_set(config: LightingConfig, ambient: float, lights: float) -> LightingConfig:
+    """`config` with the ambient set to `ambient` and every light's colour to `lights`, all grey.
+
+    Absolute where `_tinted` is relative: whatever colours `config` had are replaced, not scaled,
+    so a tint stacked *before* this is overwritten, while one stacked after it still applies.
+    """
+    return replace(
+        config,
+        ambient=(ambient, ambient, ambient),
+        lights=tuple(replace(light, color=(lights, lights, lights)) for light in config.lights),
+    )
+
+
+DEFAULT_KELVIN = 6500.0
+"""The colour temperature `"default"`'s white lights are taken to be; the hue sliders' zero."""
+HUE_SET_KELVIN = {"warm": 2700.0, "cool": 12000.0}
+"""Where `"warm-set-1"` and `"cool-set-1"` end: a household incandescent bulb, and open shade
+under a clear blue sky. Both about as far as real light goes before it stops reading as white
+light at all. For scale, the hand-picked `"very-warm"` is roughly 3400 K and `"very-cool"` is bluer
+than 20000 K, i.e. bluer than any daylight."""
+HUE_SET_MAX_AMOUNT = 1.6
+"""How far past 1 the hue sliders run. For warm that is about 2000 K, candlelight, just short of
+where a blackbody's blue channel goes negative in linear sRGB (about 1917 K), which no light colour
+can be; for cool about 24400 K, just inside the 25000 K where `_planckian_linear_rgb`'s fit stops
+being valid."""
+
+# linear sRGB from CIE XYZ, D65 white
+_XYZ_TO_LINEAR_SRGB = np.array([
+    [3.2406, -1.5372, -0.4986],
+    [-0.9689, 1.8758, 0.0415],
+    [0.0557, -0.2040, 1.0570],
+])
+_LUMINANCE = np.array([0.2126, 0.7152, 0.0722])
+
+
+def _planckian_linear_rgb(kelvin: float) -> np.ndarray:
+    """A blackbody's colour at `kelvin`, in linear sRGB at luminance 1.
+
+    From the cubic-spline fit to the Planckian locus of Kim et al. (2002), valid 1667-25000 K.
+    Linear rather than gamma-encoded because light colours multiply radiance in the renderer.
+    """
+    t = kelvin
+    if t <= 4000.0:
+        x = -0.2661239e9 / t**3 - 0.2343589e6 / t**2 + 0.8776956e3 / t + 0.179910
+    else:
+        x = -3.0258469e9 / t**3 + 2.1070379e6 / t**2 + 0.2226347e3 / t + 0.240390
+    if t <= 2222.0:
+        y = -1.1063814 * x**3 - 1.34811020 * x**2 + 2.18555832 * x - 0.20219683
+    elif t <= 4000.0:
+        y = -0.9549476 * x**3 - 1.37418593 * x**2 + 2.09137015 * x - 0.16748867
+    else:
+        y = 3.0817580 * x**3 - 5.87338670 * x**2 + 3.75112997 * x - 0.37001483
+    return _XYZ_TO_LINEAR_SRGB @ np.array([x / y, 1.0, (1.0 - x - y) / y])
+
+
+def _hue_kelvin(hue: str, amount: float) -> float:
+    """The colour temperature `amount` of the way from `DEFAULT_KELVIN` to `HUE_SET_KELVIN[hue]`,
+    stepped in mired (1e6 / kelvin), the scale colour-temperature differences are perceived
+    evenly on. Past 1 it carries on at the same rate."""
+    start, end = 1e6 / DEFAULT_KELVIN, 1e6 / HUE_SET_KELVIN[hue]
+    return 1e6 / (start + amount * (end - start))
+
+
+def _hue_tint(hue: str, amount: float) -> Color:
+    """The tint `amount` of the way from `DEFAULT_KELVIN` to `HUE_SET_KELVIN[hue]`.
+
+    Relative to the default's blackbody so that 0 is exactly no tint (see `_hue_kelvin` for the
+    stepping), and rescaled to luminance 1, so the slider moves the hue and not the exposure: that
+    is left to `bright-set`.
+    """
+    if amount == 0.0:
+        return (1.0, 1.0, 1.0)
+    kelvin = _hue_kelvin(hue, amount)
+    tint = _planckian_linear_rgb(kelvin) / _planckian_linear_rgb(DEFAULT_KELVIN)
+    return tuple(float(channel) for channel in tint / (_LUMINANCE @ tint))
+
+
+_NUMBER = r"(\d+(?:\.\d+)?)"
+_BRIGHT_SET = re.compile(rf"bright-set-{_NUMBER}-{_NUMBER}")
+"""`"bright-set-<ambient>-<lights>"`, e.g. `"bright-set-0.45-1.5"` (the levels `"bright"` works out
+to): an exposure condition given by its levels rather than as a multiple of the default's."""
+_SIDE_SET = re.compile(rf"side-set-{_NUMBER}")
+"""`"side-set-<amount>"`, `amount` in [0, 1]: the key light turned that fraction of the way from
+where `"default"` has it to where `"side"` does; see `_key_direction_towards_side`."""
+_HUE_SET = re.compile(rf"(warm|cool)-set-{_NUMBER}")
+"""`"warm-set-<amount>"` / `"cool-set-<amount>"`: every light tinted along the blackbody curve from
+`DEFAULT_KELVIN` at 0 to `HUE_SET_KELVIN` at 1, and on up to `HUE_SET_MAX_AMOUNT`; see
+`_hue_tint`."""
 
 
 _SHADOW_CASTER = (
@@ -231,18 +348,58 @@ def _stacked(name: str) -> LightingConfig:
     Each effect is a plain function of a `LightingConfig`, so stacking them is just folding: the
     tint effects multiply together regardless of order, and `side` only ever touches `lights[0]`'s
     direction, so "very-dim+very-warm+side" and "side+very-warm+very-dim" build the same config.
+    The exception is `"bright-set-<ambient>-<lights>"`, which sets the levels outright and so
+    overwrites any tint before it: "bright-set-0.3-1+warm" is warm, "warm+bright-set-0.3-1" is not.
+    `side` and `"side-set-<amount>"` likewise both set the key light's direction outright, so of
+    two of them in one stack the last one wins. `"warm-set-<amount>"` / `"cool-set-<amount>"` are
+    tints like `warm`, so they multiply with the others in any order.
     """
     parts = name.split("+")
     config = DEFAULT_LIGHTING
     for part in parts:
-        effect = _PRESET_EFFECTS.get(part)
+        effect = _effect(part)
         if effect is None:
             raise ValueError(
                 f"Unknown lighting preset {part!r} in stacked preset {name!r}; a stack can only "
-                f"combine {', '.join(repr(preset) for preset in _PRESET_EFFECTS)}"
+                f"combine {', '.join(repr(preset) for preset in _PRESET_EFFECTS)}, "
+                f"'bright-set-<ambient>-<lights>', 'side-set-<amount>', 'warm-set-<amount>' and "
+                f"'cool-set-<amount>'"
             )
         config = effect(config)
     return config
+
+
+def _effect(part: str) -> Callable[[LightingConfig], LightingConfig] | None:
+    """The effect one stack element names: a `_PRESET_EFFECTS` entry, or a `_BRIGHT_SET`,
+    `_SIDE_SET` or `_HUE_SET` match."""
+    effect = _PRESET_EFFECTS.get(part)
+    if effect is not None:
+        return effect
+    match = _BRIGHT_SET.fullmatch(part)
+    if match is not None:
+        ambient, lights = (float(level) for level in match.groups())
+        return lambda config: _levels_set(config, ambient, lights)
+    match = _SIDE_SET.fullmatch(part)
+    if match is not None:
+        amount = float(match.group(1))
+        # past 1 the arc runs on towards the horizon and, at about 1.1, under the table
+        if amount > 1.0:
+            raise ValueError(
+                f"Lighting preset {part!r} is past 'side': side-set takes an amount in [0, 1]"
+            )
+        direction = _key_direction_towards_side(amount)
+        return lambda config: _with_key_direction(config, direction)
+    match = _HUE_SET.fullmatch(part)
+    if match is not None:
+        hue, amount = match.group(1), float(match.group(2))
+        if amount > HUE_SET_MAX_AMOUNT:
+            raise ValueError(
+                f"Lighting preset {part!r} is past {hue}-set-{HUE_SET_MAX_AMOUNT} "
+                f"({_hue_kelvin(hue, HUE_SET_MAX_AMOUNT):.0f} K): {hue}-set takes an amount from "
+                f"0 to {HUE_SET_MAX_AMOUNT}"
+            )
+        return _tint_effect(_hue_tint(hue, amount))
+    return None
 
 
 LIGHTING_PRESETS: dict[str, LightingConfig] = {
@@ -374,7 +531,13 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
     A name is looked up in `LIGHTING_PRESETS` first, so every named condition (`"default"`,
     `"random"` included) resolves exactly as it always has. Failing that, a "+"-joined name (e.g.
     `"very-dim+very-warm+side"`) is folded through `_stacked` instead of requiring every
-    combination to be pre-declared there.
+    combination to be pre-declared there, and so is `"bright-set-<ambient>-<lights>"`, which sets
+    the ambient to `<ambient>` and the key and fill lights to `<lights>` (each grey, all channels
+    equal) rather than scaling the default's, and `"side-set-<amount>"`, which turns the key light
+    `<amount>` (in [0, 1]) of the way from `"default"`'s direction to `"side"`'s, and
+    `"warm-set-<amount>"` / `"cool-set-<amount>"`, which tint every light `<amount>` of the way
+    along the blackbody curve from 6500 K to 2700 K / 12000 K at constant luminance, and past 1 on
+    to 1.6 (about 2000 K / 24400 K).
 
     Worth doing before `gym.make` for the same reason `canonical_camera_view` is: a misspelled
     preset that fell through to "no override" would build a perfectly working env showing the
@@ -387,12 +550,15 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
             return LIGHTING_PRESETS[lighting]
         except KeyError:
             pass
-        if "+" in lighting:
+        if "+" in lighting or _effect(lighting) is not None:
             return _stacked(lighting)
         raise ValueError(
             f"Unknown lighting preset {lighting!r}, expected one of "
-            f"{', '.join(repr(name) for name in LIGHTING_PRESETS)}, or a \"+\"-joined stack of "
-            f"{', '.join(repr(name) for name in _PRESET_EFFECTS)}"
+            f"{', '.join(repr(name) for name in LIGHTING_PRESETS)}, "
+            f"'bright-set-<ambient>-<lights>' (e.g. 'bright-set-0.45-1.5'), 'side-set-<amount>' "
+            f"(e.g. 'side-set-0.5'), 'warm-set-<amount>' / 'cool-set-<amount>' (e.g. "
+            f"'warm-set-0.5'), or a \"+\"-joined stack of "
+            f"{', '.join(repr(name) for name in _PRESET_EFFECTS)} and those sliders"
         )
     if isinstance(lighting, Mapping):
         return lighting_config_from_dict(lighting)

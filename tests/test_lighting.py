@@ -143,6 +143,117 @@ def test_shadows_prop_is_out_of_view_but_casts_onto_the_hand_camera():
     )
 
 
+def test_bright_set_sets_the_levels_outright():
+    """"bright-set-A-B" puts the ambient at A and both lights at B, alone or inside a stack."""
+    config = canonical_lighting("bright-set-0.6-2.5")
+    assert config.ambient == (0.6, 0.6, 0.6)
+    assert [light.color for light in config.lights] == [(2.5, 2.5, 2.5), (2.5, 2.5, 2.5)]
+    assert [light.direction for light in config.lights] == [
+        light.direction for light in DEFAULT_LIGHTING.lights
+    ]
+    assert canonical_lighting("bright-set-0.3-1") == DEFAULT_LIGHTING
+
+    # absolute, so a tint before it is overwritten and one after it still applies
+    assert canonical_lighting("warm+bright-set-0.6-2.5") == config
+    warm_after = canonical_lighting("bright-set-0.6-2.5+warm")
+    assert warm_after.lights[0].color == (2.5 * 1.15, 2.5 * 0.9, 2.5 * 0.65)
+    assert canonical_lighting("side+bright-set-0.6-2.5").lights[0].direction == (-1.0, -1.0, -0.35)
+
+    for bad in ["bright-set-0.6", "bright-set-0.6-", "bright-set--1-2", "bright-set-a-2"]:
+        try:
+            canonical_lighting(bad)
+        except ValueError as error:
+            assert bad in str(error), f"{bad!r} raised {error!r}"
+        else:
+            raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_side_set_turns_the_key_light_from_default_to_side():
+    """"side-set-t" slerps the key light from default's direction to side's, touching nothing else."""
+    assert canonical_lighting("side-set-0") == DEFAULT_LIGHTING
+    assert canonical_lighting("side-set-1") == LIGHTING_PRESETS["side"]
+
+    def unit(v):
+        return np.asarray(v) / np.linalg.norm(v)
+
+    start = unit(DEFAULT_LIGHTING.lights[0].direction)
+    end = unit(LIGHTING_PRESETS["side"].lights[0].direction)
+    total = np.degrees(np.arccos(start @ end))
+    for t in (0.1, 0.25, 0.5, 0.9):
+        config = canonical_lighting(f"side-set-{t}")
+        key = unit(config.lights[0].direction)
+        assert np.isclose(key[0], key[1]), "left the x == y plane both endpoints lie in"
+        assert np.isclose(np.degrees(np.arccos(start @ key)), t * total), "steps are not equal angles"
+        assert np.isclose(np.degrees(np.arccos(key @ end)), (1 - t) * total)
+        assert config.ambient == DEFAULT_LIGHTING.ambient
+        assert config.lights[1:] == DEFAULT_LIGHTING.lights[1:]
+        assert config.lights[0].color == DEFAULT_LIGHTING.lights[0].color
+
+    # the short arc goes over the top, so somewhere in between the key light points straight down
+    overhead = np.degrees(np.arccos(start @ np.array([0.0, 0.0, -1.0]))) / total
+    assert np.allclose(unit(canonical_lighting(f"side-set-{overhead:.6f}").lights[0].direction),
+                       [0.0, 0.0, -1.0], atol=1e-5)
+
+    # composes with an exposure change, and a later direction setter wins
+    stacked = canonical_lighting("side-set-0.5+bright-set-0.6-2.5")
+    assert stacked.lights[0].direction == canonical_lighting("side-set-0.5").lights[0].direction
+    assert stacked.ambient == (0.6, 0.6, 0.6)
+    assert canonical_lighting("side+side-set-0.5") == canonical_lighting("side-set-0.5")
+
+    for bad in ["side-set-1.5", "side-set-", "side-set--0.5", "side-set-x"]:
+        try:
+            canonical_lighting(bad)
+        except ValueError as error:
+            assert bad in str(error), f"{bad!r} raised {error!r}"
+        else:
+            raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_hue_set_slides_along_the_blackbody_curve():
+    """"warm-set-t" / "cool-set-t" tint every light, from no tint at 0 to 2700 K / 12000 K at 1."""
+    assert canonical_lighting("warm-set-0") == DEFAULT_LIGHTING
+    assert canonical_lighting("cool-set-0") == DEFAULT_LIGHTING
+    luminance = np.array([0.2126, 0.7152, 0.0722])
+
+    def tint(name):
+        config = canonical_lighting(name)
+        ratio = np.asarray(config.ambient) / np.asarray(DEFAULT_LIGHTING.ambient)
+        # one tint on everything, ambient included, same as the warm/cool presets
+        for light, base in zip(config.lights, DEFAULT_LIGHTING.lights):
+            assert np.allclose(np.asarray(light.color) / np.asarray(base.color), ratio)
+            assert light.direction == base.direction
+        return ratio
+
+    for hue, redder in (("warm", True), ("cool", False)):
+        previous = 1.0
+        for t in (0.25, 0.5, 0.75, 1):
+            ratio = tint(f"{hue}-set-{t}")
+            assert np.isclose(luminance @ ratio, 1.0), "the hue slider changed the exposure"
+            blue_over_red = ratio[2] / ratio[0]
+            assert (blue_over_red < previous) if redder else (blue_over_red > previous)
+            previous = blue_over_red
+    # the endpoints are real light sources, not saturated primaries
+    assert (np.asarray(tint("warm-set-1")) > 0.1).all() and (np.asarray(tint("cool-set-1")) > 0.5).all()
+
+    stacked = canonical_lighting("warm-set-0.5+bright-set-0.3-1")
+    assert stacked == DEFAULT_LIGHTING, "bright-set after a tint should overwrite it"
+    assert canonical_lighting("warm-set-0.5+side") == canonical_lighting("side+warm-set-0.5")
+
+    # past 1 keeps going the same way, until the limits where a light colour stops making sense
+    for hue, redder in (("warm", True), ("cool", False)):
+        at_one, past = tint(f"{hue}-set-1"), tint(f"{hue}-set-1.6")
+        assert (past[2] / past[0] < at_one[2] / at_one[0]) if redder else (past[2] / past[0] > at_one[2] / at_one[0])
+        assert np.isclose(luminance @ past, 1.0) and (past >= 0).all()
+
+    for bad in ["warm-set-1.61", "cool-set-1.61", "cool-set-", "cool-set--0.5", "hot-set-0.5"]:
+        try:
+            canonical_lighting(bad)
+        except ValueError as error:
+            assert bad in str(error), f"{bad!r} raised {error!r}"
+        else:
+            raise AssertionError(f"{bad!r} was accepted")
+
+
 def test_unknown_preset_in_a_stack_is_rejected():
     """A misspelling inside a stack has to raise, same as a misspelled lone preset name."""
     try:
@@ -293,6 +404,9 @@ if __name__ == "__main__":
         test_stacked_presets_compose,
         test_shadows_forces_only_the_lights_that_follow_enable_shadow,
         test_shadows_prop_is_out_of_view_but_casts_onto_the_hand_camera,
+        test_bright_set_sets_the_levels_outright,
+        test_side_set_turns_the_key_light_from_default_to_side,
+        test_hue_set_slides_along_the_blackbody_curve,
         test_unknown_preset_in_a_stack_is_rejected,
         test_a_task_without_the_mixin_says_so,
         test_dict_conditions_reach_the_scene_and_survive_json,

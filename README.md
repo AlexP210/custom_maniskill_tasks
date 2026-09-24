@@ -135,8 +135,11 @@ stock `-v1` id raises rather than silently doing nothing.
 | --- | --- |
 | `default` | `BaseEnv._load_lighting` transcribed: ambient `0.3`, two white directional lights |
 | `dim` / `bright` | the same lighting at half / one-and-a-half times the level |
+| `bright-set-<A>-<B>` | ambient set to `A` and both directional lights to `B` (white), e.g. `bright-set-0.45-1.5` |
 | `warm` / `cool` | the same geometry and roughly the same exposure, under a colour cast |
+| `warm-set-<t>` / `cool-set-<t>` | every light tinted `t` (0 to 1) of the way along the blackbody curve from 6500 K to 2700 K (incandescent) / 12000 K (blue-sky shade), at constant luminance; `t = 0` is `default`, and `t` runs on past 1 up to 1.6 (about 2000 K / 24400 K) |
 | `side` | the key light crossed to the other side and raked lower, so shading falls the other way |
+| `side-set-<t>` | the key light turned `t` (0 to 1) of the way from `default`'s direction to `side`'s, over the top; `side-set-0` is `default`, `side-set-1` is `side` |
 | `random` | one condition drawn per parallel env — training-time domain randomization |
 
 A dict of the same shape as `LightingConfig` is accepted wherever a preset name is, for a one-off
