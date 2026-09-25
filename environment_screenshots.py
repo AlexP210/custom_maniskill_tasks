@@ -1,176 +1,123 @@
-"""Render a grid of env screenshots: one column per task, and three rows -- the episode's
-start state, a goal state sampled for that same episode, and the wrist camera the policy observes.
+"""Render a grid of env screenshots: one row per task, and five columns -- the episode's start
+state, the wrist camera the policy observes at that start, the goal state the task's visual PPO
+expert reaches from it, and the same start state under two of the shifted lighting conditions.
 
-    python environment_screenshots.py [--out PATH] [--seed N]
+    python environment_screenshots.py [--out PATH] [--seed N] [--device cuda:N]
 
 Needs a real render backend (SAPIEN/Vulkan), so this has to run where that's available --
 inside the project's apptainer container with --nv on a GPU node, not on the login node.
 """
 
 import argparse
+import json
+import math
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from transforms3d.euler import euler2quat
-
-from mani_skill.utils.structs import Pose
-
-from custom_maniskill_tasks import WRIST_CAMERA_UID, make_env
+from mani_skill.utils import gym_utils
 
 HERE = Path(__file__).resolve().parent
 
-# column title, task id.
+# the expert's env and network are rebuilt by the script that recorded its demos, so the rollout
+# here cannot drift from the one the datasets came from
+sys.path.insert(0, str(HERE.parents[1] / "tools"))
+from make_expert_demos import build_env, load_agent, resolve_backends  # noqa: E402
+from ppo_visual_expert_fast import as_obs_td  # noqa: E402
+
+EXPERTS_DIR = Path("/data/AlexPleava/datasets/maniskill")
+
+# row title, task id.
 TASKS = (
     ("PushCube-v1.1", "PushCube-v1.1"),
     ("LiftPegUpright-v1.1", "LiftPegUpright-v1.1"),
-    ("PlaceSphere-v1.1", "PlaceSphere-v1.1"),
-    ("PokeCube-v1.1", "PokeCube-v1.1"),
+    ("PickCube-v1.1", "PickCube-v1.1"),
 )
 
-ROW_TITLES = ("Start", "Goal", "Visual Obs")
-"""The top two rows come from `env.render()`, i.e. each task's own `render_camera`
+# column title, lighting preset. The first three columns are under the stock lighting; these are
+# the start frame again, relit.
+LIGHTING_COLUMNS = (
+    ("Bright", "bright-set-0.675-2.25"),
+    ("Warm", "warm-set-1.1"),
+)
+COLUMN_TITLES = ("Start", "Visual Obs", "Goal") + tuple(title for title, _ in LIGHTING_COLUMNS)
+"""All but "Visual Obs" come from `env.render()`, i.e. each task's own `render_camera`
 (`_default_human_render_camera_configs`): the 512x512 three-quarter view ManiSkill's docs and
-videos show, which no `camera_view` here touches. The bottom row is the wrist camera a policy
-actually observes -- a different camera, which is why the viewpoint changes between rows."""
+videos show, which no `camera_view` here touches. "Visual Obs" is the wrist camera a policy
+actually observes -- a different camera, which is why the viewpoint changes."""
 
 
-def _set_pose(actor, base_env, p, q=(1, 0, 0, 0)):
-    """Move `actor` to xyz `p` with quaternion `q`, batched for this env's single scene."""
-    actor.set_pose(
-        Pose.create_from_pq(
-            p=torch.tensor([p], dtype=torch.float32, device=base_env.device),
-            q=torch.tensor([q], dtype=torch.float32, device=base_env.device),
-        )
+def expert_folder(task_id):
+    return EXPERTS_DIR / f"{task_id}-ppo-visual-wrist-224-pd_ee_delta_pos"
+
+
+def load_expert_config(task_id):
+    """The env the expert was trained and rolled out on, read back from its demo summary.
+
+    `demos/demo_summary.json` rather than `training_summary.json`, because only the former is in
+    every one of these folders; it carries the same env fields, copied from the training run.
+    """
+    summary = json.loads((expert_folder(task_id) / "demos" / "demo_summary.json").read_text())
+    assert summary["env_id"] == task_id, f"{expert_folder(task_id)} holds a {summary['env_id']} run"
+    return dict(
+        env_id=summary["env_id"],
+        camera_view=summary["camera_view"],
+        camera_resolution=summary["camera_resolution"],
+        include_state=summary["include_state"],
+        control_mode=summary["control_mode"],
     )
 
 
-def _push_cube_goal(base_env, rng):
-    """Cube resting anywhere inside the goal disk -- the whole success set of `evaluate`.
+def _render(env):
+    return env.unwrapped.render_rgb_array()[0].cpu().numpy()
 
-    Uniform over the disk (hence the sqrt on the radius; without it samples bunch up in the
-    middle), with the target left where the reset put it, so the goal frame is the start frame
-    with only the cube moved.
+
+def render_expert_episode(task_id, cfg, seed, backends, device):
+    """The (start, wrist, goal) frames of one expert episode, as (H, W, 3) uint8 arrays.
+
+    The expert acts deterministically (`actor_mean`, no noise) from the seeded reset, and the goal
+    frame is the first step the task's own `evaluate()` reports success on. An episode that never
+    succeeds fails loudly rather than passing off its last frame as a goal.
     """
-    goal_xy = base_env.goal_region.pose.p[0, :2].cpu().numpy()
-    radius = base_env.goal_radius * np.sqrt(rng.random())
-    angle = rng.uniform(0, 2 * np.pi)
-    _set_pose(
-        base_env.obj,
-        base_env,
-        [
-            float(goal_xy[0] + radius * np.cos(angle)),
-            float(goal_xy[1] + radius * np.sin(angle)),
-            base_env.cube_half_size,
-        ],
-    )
-
-
-def _lift_peg_upright_goal(base_env, rng):
-    """Peg standing on end, at a position drawn from the region the task initializes in.
-
-    The quaternion is not the obvious `euler2quat(0, pi/2, 0)`. That one does stand the peg up,
-    but the task's success check reads the *third* XYZ euler angle, and a pure y-rotation is the
-    gimbal-locked case that leaves that angle at 0 -- so `evaluate` scores a genuinely upright peg
-    as a failure, and scores the flat `euler2quat(0, 0, pi/2)` peg as a success. This composition
-    is upright (the peg's local x axis, its long axis, maps to -z) *and* decomposes to
-    |euler_z| = pi/2, so it satisfies the predicate the datasets and success rates are scored
-    against. A random yaw would re-enter the same gimbal case, so only the position is sampled.
-    """
-    xy = rng.uniform(-0.1, 0.1, size=2)
-    _set_pose(
-        base_env.peg,
-        base_env,
-        [float(xy[0]), float(xy[1]), base_env.peg_half_length],
-        tuple(float(v) for v in euler2quat(np.pi / 2, np.pi / 2, 0)),
-    )
-
-
-def _place_sphere_goal(base_env, rng):
-    """Sphere seated in the bin, wherever the reset put the bin.
-
-    Nothing to sample: `evaluate` allows 5mm of slack in each axis, so the success set is a single
-    pose up to that noise. `rng` is taken anyway to keep one signature across the three.
-    """
-    bin_p = base_env.bin.pose.p[0].cpu().numpy()
-    _set_pose(
-        base_env.obj,
-        base_env,
-        [
-            float(bin_p[0]),
-            float(bin_p[1]),
-            float(bin_p[2]) + base_env.radius + base_env.block_half_size[0],
-        ],
-    )
-
-
-def _poke_cube_goal(base_env, rng):
-    """Cube resting anywhere inside the goal disk, drawn uniformly over it like PushCube's.
-
-    Success here is `is_cube_placed & is_robot_static`, so unlike PushCube the arm matters: the
-    frame is taken straight after a reset, where the Panda is settled and `is_static(0.2)` holds,
-    and nothing is stepped before rendering. The peg is left where the reset put it -- the goal
-    is a cube position, and the task says nothing about where the tool ends up.
-    """
-    goal_xy = base_env.goal_region.pose.p[0, :2].cpu().numpy()
-    radius = base_env.goal_radius * np.sqrt(rng.random())
-    angle = rng.uniform(0, 2 * np.pi)
-    _set_pose(
-        base_env.cube,
-        base_env,
-        [
-            float(goal_xy[0] + radius * np.cos(angle)),
-            float(goal_xy[1] + radius * np.sin(angle)),
-            base_env.cube_half_size,
-        ],
-    )
-
-
-GOAL_STATES = {
-    "PushCube-v1.1": _push_cube_goal,
-    "LiftPegUpright-v1.1": _lift_peg_upright_goal,
-    "PlaceSphere-v1.1": _place_sphere_goal,
-    "PokeCube-v1.1": _poke_cube_goal,
-}
-"""How to put each task into a goal state, by task id. Each entry poses the task's own objects
-rather than rolling out a policy, and `render_episode` checks the result against the task's
-`evaluate()`, so a pose that stops satisfying the predicate fails loudly instead of producing a
-plausible-looking but wrong figure. The arm is left in its reset pose: these frames show the goal
-configuration of the scene, not a state some policy reached."""
-
-
-def render_episode(task_id, seed, rng):
-    """The (start, goal) render-camera frames of one episode, as (H, W, 3) uint8 arrays.
-
-    Both come from one env, so the goal frame is the start frame with only the task's objects
-    moved -- same table, same target/bin placement, same arm pose. `obs_mode="none"` because
-    neither frame is read from an observation camera.
-    """
-    env = make_env(task_id, obs_mode="none", camera_view="default", num_envs=1)
+    env = build_env(cfg, 1, backends)
     try:
-        env.reset(seed=seed)
-        start = env.render()[0].cpu().numpy()
-
-        base_env = env.unwrapped
-        GOAL_STATES[task_id](base_env, rng)
-        evaluation = base_env.evaluate()
-        if not bool(evaluation["success"][0]):
-            raise AssertionError(
-                f"the goal state built for {task_id} does not satisfy the task's own success "
-                f"predicate: { {k: v.tolist() for k, v in evaluation.items()} }"
-            )
-        return start, env.render()[0].cpu().numpy()
+        obs, _ = env.reset(seed=seed)
+        start = _render(env)
+        # a copy: the rgb leaf is ManiSkill's live camera buffer, overwritten by the next step
+        wrist = obs["rgb"][0].clone().cpu().numpy()
+        agent = load_agent(
+            as_obs_td(obs, 1),
+            math.prod(env.get_wrapper_attr("single_action_space").shape),
+            expert_folder(task_id) / "best_ckpt.pt",
+            device,
+        )
+        horizon = gym_utils.find_max_episode_steps_value(env)
+        for _ in range(horizon):
+            with torch.no_grad():
+                action = agent.get_action(as_obs_td(obs, 1))
+            obs, _, _, _, info = env.step(action)
+            if bool(info["success"][0]):
+                return start, wrist, _render(env)
+        raise AssertionError(
+            f"the {task_id} expert did not reach success within {horizon} steps from seed {seed}; "
+            "try another --seed"
+        )
     finally:
         env.close()
 
 
-def render_wrist_frame(task_id, seed):
-    """The wrist-camera observation at the start of the same episode, as an (H, W, 3) uint8."""
-    env = make_env(task_id, obs_mode="rgb", camera_view="wrist", num_envs=1)
+def render_relit_start(cfg, seed, backends, lighting):
+    """The render-camera frame at the start of the same episode, lit by `lighting`.
+
+    Built through the same `build_env`, camera view and sim backend as the expert episode: the
+    reset randomization draws from the sim device's torch generator, so a different backend would
+    lay out a different scene from the same seed.
+    """
+    env = build_env(cfg, 1, dict(backends, lighting=lighting))
     try:
-        obs, _ = env.reset(seed=seed)
-        return obs["sensor_data"][WRIST_CAMERA_UID]["rgb"][0].cpu().numpy()
+        env.reset(seed=seed)
+        return _render(env)
     finally:
         env.close()
 
@@ -179,31 +126,37 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out", type=Path, default=HERE / "environment_screenshots.png",
-        help="path to write the grid image to",
+        help="path to write the grid image to; a PDF copy is written alongside it, with the "
+        "same name and a .pdf suffix",
     )
     parser.add_argument(
         "--seed", type=int, default=0,
-        help="reset seed, shared across every task/camera so all nine frames show the same "
-        "starting configuration; also seeds the goal-state sampling",
+        help="reset seed, shared across every task/lighting condition so each row's frames show "
+        "the same starting configuration",
+    )
+    parser.add_argument(
+        "--device", default="cuda:0",
+        help="torch device, which also pins the physx sim and the sapien renderer",
     )
     args = parser.parse_args()
 
-    rng = np.random.default_rng(args.seed)
+    device = torch.device(args.device)
+    backends = resolve_backends(device)
     frames = {}
-    # every non-wrist env is built before the first wrist one: registering the wrist camera on the
-    # `panda` uid is process-wide and permanent, and a "default" env built afterwards would carry
-    # a hand_camera too (see `cameras.camera_view_applied`)
-    for col, (_, task_id) in enumerate(TASKS):
-        frames[0, col], frames[1, col] = render_episode(task_id, args.seed, rng)
-    for col, (_, task_id) in enumerate(TASKS):
-        frames[2, col] = render_wrist_frame(task_id, args.seed)
+    for row, (_, task_id) in enumerate(TASKS):
+        cfg = load_expert_config(task_id)
+        frames[row, 0], frames[row, 1], frames[row, 2] = render_expert_episode(
+            task_id, cfg, args.seed, backends, device
+        )
+        for col, (_, lighting) in enumerate(LIGHTING_COLUMNS, start=3):
+            frames[row, col] = render_relit_start(cfg, args.seed, backends, lighting)
 
     fig, axes = plt.subplots(
-        len(ROW_TITLES), len(TASKS), figsize=(4 * len(TASKS), 4 * len(ROW_TITLES))
+        len(TASKS), len(COLUMN_TITLES), figsize=(4 * len(COLUMN_TITLES), 4 * len(TASKS))
     )
 
-    for row, row_title in enumerate(ROW_TITLES):
-        for col, (title, _) in enumerate(TASKS):
+    for row, (row_title, _) in enumerate(TASKS):
+        for col, title in enumerate(COLUMN_TITLES):
             ax = axes[row, col]
             ax.imshow(frames[row, col])
             ax.set_xticks([])
@@ -216,8 +169,10 @@ def main():
                 ax.set_ylabel(row_title, fontsize=24)
 
     fig.tight_layout()
-    fig.savefig(args.out, dpi=200, bbox_inches="tight")
-    print(f"wrote {args.out}")
+    # the frames are raster either way; dpi sets the resolution they are embedded at in the PDF
+    for path in (args.out, args.out.with_suffix(".pdf")):
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        print(f"wrote {path}")
 
 
 if __name__ == "__main__":

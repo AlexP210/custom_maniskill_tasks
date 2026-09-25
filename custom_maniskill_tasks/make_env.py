@@ -101,7 +101,9 @@ def make_env(
             fraction (0 to 1) of the way from "default"'s direction to "side"'s,
             "warm-set-<amount>" / "cool-set-<amount>" to tint the lights that fraction of the way
             along the blackbody curve from 6500 K to 2700 K / 12000 K (and past 1, up to 1.6:
-            about 2000 K / 24400 K), a "+"-joined stack of those shift names for a condition that combines several at once
+            about 2000 K / 24400 K), "dark-table" / "very-dark-table" or "table-set-<scale>" /
+            "table-set-<r>-<g>-<b>" to recolour the table and leave the lights alone (e.g.
+            "table-set-0.4"), a "+"-joined stack of those shift names for a condition that combines several at once
             (e.g. "very-dim+very-warm+side"), or a config dict for a one-off condition. Only the
             project's own `-v1.1` ids support it. It is a real env kwarg, so a non-default
             condition is recorded into any trajectory collected through it; a "default" one is not

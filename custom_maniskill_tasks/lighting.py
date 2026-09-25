@@ -101,6 +101,10 @@ class LightingConfig:
     lights: tuple[DirectionalLight, ...]
     randomization: LightingRandomization | None = None
     props: tuple[SceneProp, ...] = ()
+    table_tint: Color = (1.0, 1.0, 1.0)
+    """Multiplied into the table's material colours (and so its wood texture); see `_tint_table`.
+    Not light at all, strictly, but an appearance shift of the same kind -- what the wrist camera
+    sees of the tabletop -- so it rides on the same `lighting` kwarg rather than a second one."""
 
 
 DEFAULT_AMBIENT: Color = (0.3, 0.3, 0.3)
@@ -198,6 +202,12 @@ def _levels_set(config: LightingConfig, ambient: float, lights: float) -> Lighti
     )
 
 
+def _table_set(config: LightingConfig, tint: Color) -> LightingConfig:
+    """`config` with the table tinted by `tint`, outright: absolute like `_levels_set`, so of two
+    in one stack the last one wins, and the lights are left alone."""
+    return replace(config, table_tint=tint)
+
+
 DEFAULT_KELVIN = 6500.0
 """The colour temperature `"default"`'s white lights are taken to be; the hue sliders' zero."""
 HUE_SET_KELVIN = {"warm": 2700.0, "cool": 12000.0}
@@ -270,6 +280,9 @@ _SIDE_SET = re.compile(rf"side-set-{_NUMBER}")
 """`"side-set-<amount>"`, `amount` in [0, 1]: the key light turned that fraction of the way from
 where `"default"` has it to where `"side"` does; see `_key_direction_towards_side`."""
 _HUE_SET = re.compile(rf"(warm|cool)-set-{_NUMBER}")
+_TABLE_SET = re.compile(rf"table-set-{_NUMBER}(?:-{_NUMBER}-{_NUMBER})?")
+"""`"table-set-<scale>"` or `"table-set-<r>-<g>-<b>"`: the table's colours multiplied by `scale` (a
+grey tint, so below 1 darkens the wood without changing its hue) or per channel; see `_tint_table`."""
 """`"warm-set-<amount>"` / `"cool-set-<amount>"`: every light tinted along the blackbody curve from
 `DEFAULT_KELVIN` at 0 to `HUE_SET_KELVIN` at 1, and on up to `HUE_SET_MAX_AMOUNT`; see
 `_hue_tint`."""
@@ -339,6 +352,9 @@ _PRESET_EFFECTS: dict[str, Callable[[LightingConfig], LightingConfig]] = {
     "side": _sided,
     # a shadow shift: no "very" variant either, a shadow being either cast or not
     "shadows": _shadows,
+    # appearance shifts: the lights are untouched, the tabletop they fall on is darker
+    "dark-table": lambda config: _table_set(config, (0.4, 0.4, 0.4)),
+    "very-dark-table": lambda config: _table_set(config, (0.2, 0.2, 0.2)),
 }
 
 
@@ -351,7 +367,8 @@ def _stacked(name: str) -> LightingConfig:
     The exception is `"bright-set-<ambient>-<lights>"`, which sets the levels outright and so
     overwrites any tint before it: "bright-set-0.3-1+warm" is warm, "warm+bright-set-0.3-1" is not.
     `side` and `"side-set-<amount>"` likewise both set the key light's direction outright, so of
-    two of them in one stack the last one wins. `"warm-set-<amount>"` / `"cool-set-<amount>"` are
+    two of them in one stack the last one wins, as do two table tints (`dark-table`,
+    `"table-set-..."`), which touch nothing but the table. `"warm-set-<amount>"` / `"cool-set-<amount>"` are
     tints like `warm`, so they multiply with the others in any order.
     """
     parts = name.split("+")
@@ -362,8 +379,8 @@ def _stacked(name: str) -> LightingConfig:
             raise ValueError(
                 f"Unknown lighting preset {part!r} in stacked preset {name!r}; a stack can only "
                 f"combine {', '.join(repr(preset) for preset in _PRESET_EFFECTS)}, "
-                f"'bright-set-<ambient>-<lights>', 'side-set-<amount>', 'warm-set-<amount>' and "
-                f"'cool-set-<amount>'"
+                f"'bright-set-<ambient>-<lights>', 'side-set-<amount>', 'warm-set-<amount>', "
+                f"'cool-set-<amount>' and 'table-set-<scale>' / 'table-set-<r>-<g>-<b>'"
             )
         config = effect(config)
     return config
@@ -371,7 +388,7 @@ def _stacked(name: str) -> LightingConfig:
 
 def _effect(part: str) -> Callable[[LightingConfig], LightingConfig] | None:
     """The effect one stack element names: a `_PRESET_EFFECTS` entry, or a `_BRIGHT_SET`,
-    `_SIDE_SET` or `_HUE_SET` match."""
+    `_SIDE_SET`, `_HUE_SET` or `_TABLE_SET` match."""
     effect = _PRESET_EFFECTS.get(part)
     if effect is not None:
         return effect
@@ -399,6 +416,11 @@ def _effect(part: str) -> Callable[[LightingConfig], LightingConfig] | None:
                 f"0 to {HUE_SET_MAX_AMOUNT}"
             )
         return _tint_effect(_hue_tint(hue, amount))
+    match = _TABLE_SET.fullmatch(part)
+    if match is not None:
+        scale, green, blue = match.groups()
+        tint = (float(scale),) * 3 if green is None else (float(scale), float(green), float(blue))
+        return lambda config: _table_set(config, tint)
     return None
 
 
@@ -510,7 +532,8 @@ def _randomization_from_dict(entry) -> LightingRandomization:
 def lighting_config_from_dict(spec: Mapping) -> LightingConfig:
     """A `LightingConfig` from the json-shaped dict form, for a condition with no preset name."""
     fields = _fields(
-        spec, required={"ambient", "lights"}, optional={"randomization"}, where="config"
+        spec, required={"ambient", "lights"}, optional={"randomization", "table_tint"},
+        where="config",
     )
     lights = fields["lights"]
     if isinstance(lights, (str, bytes)) or not isinstance(lights, Sequence) or not lights:
@@ -522,6 +545,7 @@ def lighting_config_from_dict(spec: Mapping) -> LightingConfig:
         randomization=(
             None if randomization is None else _randomization_from_dict(randomization)
         ),
+        table_tint=_color(fields.get("table_tint", (1.0, 1.0, 1.0)), "config.table_tint"),
     )
 
 
@@ -537,7 +561,8 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
     `<amount>` (in [0, 1]) of the way from `"default"`'s direction to `"side"`'s, and
     `"warm-set-<amount>"` / `"cool-set-<amount>"`, which tint every light `<amount>` of the way
     along the blackbody curve from 6500 K to 2700 K / 12000 K at constant luminance, and past 1 on
-    to 1.6 (about 2000 K / 24400 K).
+    to 1.6 (about 2000 K / 24400 K), and `"table-set-<scale>"` / `"table-set-<r>-<g>-<b>"`, which
+    multiply the table's colours by that tint and leave the lights alone.
 
     Worth doing before `gym.make` for the same reason `canonical_camera_view` is: a misspelled
     preset that fell through to "no override" would build a perfectly working env showing the
@@ -557,7 +582,8 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
             f"{', '.join(repr(name) for name in LIGHTING_PRESETS)}, "
             f"'bright-set-<ambient>-<lights>' (e.g. 'bright-set-0.45-1.5'), 'side-set-<amount>' "
             f"(e.g. 'side-set-0.5'), 'warm-set-<amount>' / 'cool-set-<amount>' (e.g. "
-            f"'warm-set-0.5'), or a \"+\"-joined stack of "
+            f"'warm-set-0.5'), 'table-set-<scale>' / 'table-set-<r>-<g>-<b>' (e.g. "
+            f"'table-set-0.4'), or a \"+\"-joined stack of "
             f"{', '.join(repr(name) for name in _PRESET_EFFECTS)} and those sliders"
         )
     if isinstance(lighting, Mapping):
@@ -690,6 +716,91 @@ def _add_scene_props(scene, props: tuple[SceneProp, ...]) -> None:
         builder.build_static(name=f"lighting_prop_{i}")
 
 
+def _srgb_to_linear(encoded: np.ndarray) -> np.ndarray:
+    return np.where(encoded <= 0.04045, encoded / 12.92, ((encoded + 0.055) / 1.055) ** 2.4)
+
+
+def _linear_to_srgb(linear: np.ndarray) -> np.ndarray:
+    return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055)
+
+
+def _tinted_texture(texture, tint: Color):
+    """A new texture holding `texture`'s pixels with `tint` multiplied into their colour channels.
+
+    New rather than `texture.upload`-ed in place: sapien caches a model's textures for the whole
+    process, so rewriting one would recolour the table of every env built after this one too,
+    `"default"` included. The multiply is done in linear light (the wood texture is sRGB-encoded),
+    so a 0.4 tint reflects 40% of the light the way a 0.4 light colour would; alpha is untouched.
+    """
+    pixels = texture.download()
+    if pixels.dtype != np.uint8:
+        raise TypeError(f"expected the table's texture as uint8, got {pixels.dtype}")
+    colour = pixels[..., :3].astype(np.float64) / 255.0
+    if texture.is_srgb:
+        colour = _linear_to_srgb(_srgb_to_linear(colour) * np.asarray(tint))
+    else:
+        colour = colour * np.asarray(tint)
+    tinted = pixels.copy()
+    tinted[..., :3] = np.clip(np.round(colour * 255.0), 0, 255).astype(np.uint8)
+    return sapien.render.RenderTexture2D(
+        tinted,
+        texture.format,
+        texture.mipmap_levels,
+        texture.filter_mode,
+        texture.address_mode,
+        texture.is_srgb,
+    )
+
+
+def _tint_table(env, tint: Color) -> None:
+    """Multiply `tint` into the colour of `env`'s table: the wood texture of its top, and the
+    `base_color` of its untextured parts.
+
+    Only takes effect before the scene first renders, so it runs from `_load_scene`: a material
+    edited after that is stored but never reaches the renderer. And the texture has to be replaced
+    rather than scaled through `base_color`, which sapien ignores on a textured material.
+
+    Every parallel env's table is the same model, so the tinted materials are worked out once, from
+    the first env's, and assigned to all of them. That is also what keeps the tint from
+    compounding: envs can share one material, and tinting each env's in turn would tint a shared
+    one again. A task with no `TableSceneBuilder` table fails loudly rather than rendering the
+    untinted scene under a condition that says otherwise.
+    """
+    table_scene = getattr(env, "table_scene", None)
+    if table_scene is None:
+        raise ValueError(
+            f"{type(env).__name__} has no `table_scene`, so a lighting condition with a "
+            f"table_tint of {tint} has no table to tint."
+        )
+
+    def parts(entity):
+        body = entity.find_component_by_type(sapien.render.RenderBodyComponent)
+        return [part for shape in body.render_shapes for part in shape.parts]
+
+    entities = table_scene.table._objs
+    template = parts(entities[0])
+    tinted = []
+    for part in template:
+        texture = part.material.base_color_texture
+        r, g, b, a = part.material.base_color
+        tinted.append((
+            None if texture is None else _tinted_texture(texture, tint),
+            [r * tint[0], g * tint[1], b * tint[2], a],
+        ))
+    for entity in entities:
+        entity_parts = parts(entity)
+        if len(entity_parts) != len(template):
+            raise AssertionError(
+                f"table entity {entity.name} has {len(entity_parts)} render parts, the first has "
+                f"{len(template)}: the parallel envs' tables are not the same model"
+            )
+        for part, (texture, base_color) in zip(entity_parts, tinted):
+            if texture is None:
+                part.material.base_color = base_color
+            else:
+                part.material.base_color_texture = texture
+
+
 class LightingMixin:
     """Gives a task a `lighting` kwarg naming the condition it renders under.
 
@@ -744,9 +855,12 @@ class LightingMixin:
     def _load_scene(self, options: dict):
         # unlike `_load_lighting`, this adds to the task's own scene rather than replacing it --
         # the task still builds its table, robot workspace and objects; a condition with `props`
-        # (currently just "shadows") gets its occluder added alongside them
+        # (currently just "shadows") gets its occluder added alongside them, and one with a
+        # `table_tint` has that table recoloured
         super()._load_scene(options)
         _add_scene_props(self.scene, self._lighting.props)
+        if self._lighting.table_tint != (1.0, 1.0, 1.0):
+            _tint_table(self, self._lighting.table_tint)
 
 
 def supports_lighting(task_name: str) -> bool:

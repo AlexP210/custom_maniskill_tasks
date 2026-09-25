@@ -254,6 +254,42 @@ def test_hue_set_slides_along_the_blackbody_curve():
             raise AssertionError(f"{bad!r} was accepted")
 
 
+def test_table_set_tints_only_the_table():
+    """"table-set-s" / "table-set-r-g-b" recolour the table, leave the lights alone, and darken it
+    in the wrist camera's view."""
+    assert canonical_lighting("table-set-1") == DEFAULT_LIGHTING
+    config = canonical_lighting("table-set-0.4")
+    assert config.table_tint == (0.4, 0.4, 0.4)
+    assert replace(config, table_tint=DEFAULT_LIGHTING.table_tint) == DEFAULT_LIGHTING
+    assert canonical_lighting("table-set-0.2-0.3-0.5").table_tint == (0.2, 0.3, 0.5)
+    assert config == LIGHTING_PRESETS["dark-table"]
+
+    # stacks with the light shifts in any order, and the last table tint wins
+    assert canonical_lighting("dark-table+warm") == canonical_lighting("warm+dark-table")
+    assert canonical_lighting("dark-table+very-dark-table") == LIGHTING_PRESETS["very-dark-table"]
+    assert canonical_lighting("bright-set-0.6-2+dark-table").lights[0].color == (2.0, 2.0, 2.0)
+
+    # the wrist camera looks almost entirely at the tabletop, so a 0.4 tint has to darken it a lot
+    baseline = _hand_frame().astype(np.float64).mean()
+    darkened = _hand_frame(lighting="dark-table").astype(np.float64).mean()
+    assert darkened < 0.8 * baseline, f"dark-table only took the wrist view from {baseline:.1f} to {darkened:.1f}"
+    # sapien caches the table's texture process-wide, so a tint written into it would recolour
+    # every env built afterwards; the default has to come back exactly as it was
+    assert np.array_equal(_hand_frame(), _hand_frame()), "the hand camera frame is not deterministic"
+    before, _ = _frame()
+    _frame(lighting="very-dark-table")
+    after, _ = _frame()
+    assert np.array_equal(before, after), "a table tint leaked into an env built after it"
+
+    for bad in ["table-set-", "table-set-0.4-0.5", "table-set--0.4", "table-set-a"]:
+        try:
+            canonical_lighting(bad)
+        except ValueError as error:
+            assert bad in str(error), f"{bad!r} raised {error!r}"
+        else:
+            raise AssertionError(f"{bad!r} was accepted")
+
+
 def test_unknown_preset_in_a_stack_is_rejected():
     """A misspelling inside a stack has to raise, same as a misspelled lone preset name."""
     try:
@@ -407,6 +443,7 @@ if __name__ == "__main__":
         test_bright_set_sets_the_levels_outright,
         test_side_set_turns_the_key_light_from_default_to_side,
         test_hue_set_slides_along_the_blackbody_curve,
+        test_table_set_tints_only_the_table,
         test_unknown_preset_in_a_stack_is_rejected,
         test_a_task_without_the_mixin_says_so,
         test_dict_conditions_reach_the_scene_and_survive_json,
