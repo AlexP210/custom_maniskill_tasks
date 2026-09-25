@@ -14,6 +14,7 @@ import json
 from dataclasses import replace
 
 import numpy as np
+import sapien
 import torch
 
 from mani_skill.envs.utils.randomization.batched_rng import BatchedRNG
@@ -290,6 +291,43 @@ def test_table_set_tints_only_the_table():
             raise AssertionError(f"{bad!r} was accepted")
 
 
+def test_object_hue_turns_only_the_task_objects():
+    """"object-hue-d" rotates the task objects' hues, touches nothing else in the config, changes
+    the wrist view, and does not leak into an env built after it."""
+    assert canonical_lighting("object-hue-0") == DEFAULT_LIGHTING
+    config = canonical_lighting("object-hue-120")
+    assert config.object_hue == 120.0
+    assert replace(config, object_hue=0.0) == DEFAULT_LIGHTING
+    assert canonical_lighting("object-hue-60+dark-table") == canonical_lighting("dark-table+object-hue-60")
+    assert canonical_lighting("object-hue-60+object-hue-120") == config
+
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", lighting="object-hue-120")
+    unwrapped = env.unwrapped
+    colours = {}
+    for name in ("cube", "table-workspace"):
+        body = unwrapped.scene.actors[name]._objs[0].find_component_by_type(sapien.render.RenderBodyComponent)
+        colours[name] = [list(part.material.base_color) for shape in body.render_shapes for part in shape.parts]
+    env.close()
+    # PushCube's cube is blue (0.047, 0.165, 0.627); 120 degrees on is red-dominant
+    r, g, b, _ = colours["cube"][0]
+    assert r > g and r > b, f"the cube was not turned from blue towards red: {colours['cube'][0]}"
+    assert colours["table-workspace"][1][:3] == [0.800000011920929] * 3, "the table was recoloured"
+
+    baseline = _hand_frame()
+    shifted = _hand_frame(lighting="object-hue-120")
+    difference = np.abs(shifted.astype(np.int16) - baseline.astype(np.int16)).mean()
+    assert difference > 1.0, f"object-hue-120 barely changes the wrist view ({difference:.3f})"
+    assert np.array_equal(_hand_frame(), baseline), "an object hue leaked into an env built after it"
+
+    for bad in ["object-hue-", "object-hue-360", "object-hue--30", "object-hue-a"]:
+        try:
+            canonical_lighting(bad)
+        except ValueError as error:
+            assert bad in str(error), f"{bad!r} raised {error!r}"
+        else:
+            raise AssertionError(f"{bad!r} was accepted")
+
+
 def test_unknown_preset_in_a_stack_is_rejected():
     """A misspelling inside a stack has to raise, same as a misspelled lone preset name."""
     try:
@@ -444,6 +482,7 @@ if __name__ == "__main__":
         test_side_set_turns_the_key_light_from_default_to_side,
         test_hue_set_slides_along_the_blackbody_curve,
         test_table_set_tints_only_the_table,
+        test_object_hue_turns_only_the_task_objects,
         test_unknown_preset_in_a_stack_is_rejected,
         test_a_task_without_the_mixin_says_so,
         test_dict_conditions_reach_the_scene_and_survive_json,

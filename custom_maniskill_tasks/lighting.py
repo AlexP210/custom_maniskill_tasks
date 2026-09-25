@@ -105,6 +105,9 @@ class LightingConfig:
     """Multiplied into the table's material colours (and so its wood texture); see `_tint_table`.
     Not light at all, strictly, but an appearance shift of the same kind -- what the wrist camera
     sees of the tabletop -- so it rides on the same `lighting` kwarg rather than a second one."""
+    object_hue: float = 0.0
+    """Degrees the hue of every task object's colours is rotated by (the table, ground, robot and
+    `props` excluded); see `_shift_object_hues`. Appearance again, not light, for the same reason."""
 
 
 DEFAULT_AMBIENT: Color = (0.3, 0.3, 0.3)
@@ -208,6 +211,12 @@ def _table_set(config: LightingConfig, tint: Color) -> LightingConfig:
     return replace(config, table_tint=tint)
 
 
+def _object_hue_set(config: LightingConfig, degrees: float) -> LightingConfig:
+    """`config` with the task objects' hue rotated by `degrees`, outright: of two in one stack the
+    last one wins, and the lights and table are left alone."""
+    return replace(config, object_hue=degrees)
+
+
 DEFAULT_KELVIN = 6500.0
 """The colour temperature `"default"`'s white lights are taken to be; the hue sliders' zero."""
 HUE_SET_KELVIN = {"warm": 2700.0, "cool": 12000.0}
@@ -283,6 +292,10 @@ _HUE_SET = re.compile(rf"(warm|cool)-set-{_NUMBER}")
 _TABLE_SET = re.compile(rf"table-set-{_NUMBER}(?:-{_NUMBER}-{_NUMBER})?")
 """`"table-set-<scale>"` or `"table-set-<r>-<g>-<b>"`: the table's colours multiplied by `scale` (a
 grey tint, so below 1 darkens the wood without changing its hue) or per channel; see `_tint_table`."""
+_OBJECT_HUE = re.compile(rf"object-hue-{_NUMBER}")
+"""`"object-hue-<degrees>"`, degrees in [0, 360): every task object's colours turned that far round
+the hue wheel (red -> yellow -> green -> blue at 0 -> 60 -> 120 -> 240); greys and white stay put.
+See `_shift_object_hues`."""
 """`"warm-set-<amount>"` / `"cool-set-<amount>"`: every light tinted along the blackbody curve from
 `DEFAULT_KELVIN` at 0 to `HUE_SET_KELVIN` at 1, and on up to `HUE_SET_MAX_AMOUNT`; see
 `_hue_tint`."""
@@ -368,7 +381,8 @@ def _stacked(name: str) -> LightingConfig:
     overwrites any tint before it: "bright-set-0.3-1+warm" is warm, "warm+bright-set-0.3-1" is not.
     `side` and `"side-set-<amount>"` likewise both set the key light's direction outright, so of
     two of them in one stack the last one wins, as do two table tints (`dark-table`,
-    `"table-set-..."`), which touch nothing but the table. `"warm-set-<amount>"` / `"cool-set-<amount>"` are
+    `"table-set-..."`), which touch nothing but the table, and two `"object-hue-..."`s, which touch
+    nothing but the task objects. `"warm-set-<amount>"` / `"cool-set-<amount>"` are
     tints like `warm`, so they multiply with the others in any order.
     """
     parts = name.split("+")
@@ -380,7 +394,8 @@ def _stacked(name: str) -> LightingConfig:
                 f"Unknown lighting preset {part!r} in stacked preset {name!r}; a stack can only "
                 f"combine {', '.join(repr(preset) for preset in _PRESET_EFFECTS)}, "
                 f"'bright-set-<ambient>-<lights>', 'side-set-<amount>', 'warm-set-<amount>', "
-                f"'cool-set-<amount>' and 'table-set-<scale>' / 'table-set-<r>-<g>-<b>'"
+                f"'cool-set-<amount>', 'table-set-<scale>' / 'table-set-<r>-<g>-<b>' and "
+                f"'object-hue-<degrees>'"
             )
         config = effect(config)
     return config
@@ -388,7 +403,7 @@ def _stacked(name: str) -> LightingConfig:
 
 def _effect(part: str) -> Callable[[LightingConfig], LightingConfig] | None:
     """The effect one stack element names: a `_PRESET_EFFECTS` entry, or a `_BRIGHT_SET`,
-    `_SIDE_SET`, `_HUE_SET` or `_TABLE_SET` match."""
+    `_SIDE_SET`, `_HUE_SET`, `_TABLE_SET` or `_OBJECT_HUE` match."""
     effect = _PRESET_EFFECTS.get(part)
     if effect is not None:
         return effect
@@ -421,6 +436,15 @@ def _effect(part: str) -> Callable[[LightingConfig], LightingConfig] | None:
         scale, green, blue = match.groups()
         tint = (float(scale),) * 3 if green is None else (float(scale), float(green), float(blue))
         return lambda config: _table_set(config, tint)
+    match = _OBJECT_HUE.fullmatch(part)
+    if match is not None:
+        degrees = float(match.group(1))
+        if degrees >= 360.0:
+            raise ValueError(
+                f"Lighting preset {part!r} is a full turn or more: object-hue takes degrees in "
+                "[0, 360)"
+            )
+        return lambda config: _object_hue_set(config, degrees)
     return None
 
 
@@ -532,7 +556,7 @@ def _randomization_from_dict(entry) -> LightingRandomization:
 def lighting_config_from_dict(spec: Mapping) -> LightingConfig:
     """A `LightingConfig` from the json-shaped dict form, for a condition with no preset name."""
     fields = _fields(
-        spec, required={"ambient", "lights"}, optional={"randomization", "table_tint"},
+        spec, required={"ambient", "lights"}, optional={"randomization", "table_tint", "object_hue"},
         where="config",
     )
     lights = fields["lights"]
@@ -546,6 +570,7 @@ def lighting_config_from_dict(spec: Mapping) -> LightingConfig:
             None if randomization is None else _randomization_from_dict(randomization)
         ),
         table_tint=_color(fields.get("table_tint", (1.0, 1.0, 1.0)), "config.table_tint"),
+        object_hue=float(fields.get("object_hue", 0.0)),
     )
 
 
@@ -562,7 +587,8 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
     `"warm-set-<amount>"` / `"cool-set-<amount>"`, which tint every light `<amount>` of the way
     along the blackbody curve from 6500 K to 2700 K / 12000 K at constant luminance, and past 1 on
     to 1.6 (about 2000 K / 24400 K), and `"table-set-<scale>"` / `"table-set-<r>-<g>-<b>"`, which
-    multiply the table's colours by that tint and leave the lights alone.
+    multiply the table's colours by that tint and leave the lights alone, and
+    `"object-hue-<degrees>"`, which turns every task object's colours that far round the hue wheel.
 
     Worth doing before `gym.make` for the same reason `canonical_camera_view` is: a misspelled
     preset that fell through to "no override" would build a perfectly working env showing the
@@ -583,7 +609,8 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
             f"'bright-set-<ambient>-<lights>' (e.g. 'bright-set-0.45-1.5'), 'side-set-<amount>' "
             f"(e.g. 'side-set-0.5'), 'warm-set-<amount>' / 'cool-set-<amount>' (e.g. "
             f"'warm-set-0.5'), 'table-set-<scale>' / 'table-set-<r>-<g>-<b>' (e.g. "
-            f"'table-set-0.4'), or a \"+\"-joined stack of "
+            f"'table-set-0.4'), 'object-hue-<degrees>' (e.g. 'object-hue-60'), or a \"+\"-joined "
+            f"stack of "
             f"{', '.join(repr(name) for name in _PRESET_EFFECTS)} and those sliders"
         )
     if isinstance(lighting, Mapping):
@@ -724,22 +751,23 @@ def _linear_to_srgb(linear: np.ndarray) -> np.ndarray:
     return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055)
 
 
-def _tinted_texture(texture, tint: Color):
-    """A new texture holding `texture`'s pixels with `tint` multiplied into their colour channels.
+def _remapped_texture(texture, remap: Callable[[np.ndarray], np.ndarray]):
+    """A new texture holding `texture`'s pixels with `remap` applied to their linear colours.
 
     New rather than `texture.upload`-ed in place: sapien caches a model's textures for the whole
-    process, so rewriting one would recolour the table of every env built after this one too,
-    `"default"` included. The multiply is done in linear light (the wood texture is sRGB-encoded),
-    so a 0.4 tint reflects 40% of the light the way a 0.4 light colour would; alpha is untouched.
+    process, so rewriting one would recolour that model in every env built after this one too,
+    `"default"` included. `remap` takes and returns an (..., 3) array of linear RGB -- an sRGB
+    texture is decoded before and re-encoded after, so a 0.4 tint reflects 40% of the light the way
+    a 0.4 light colour would -- and alpha is untouched.
     """
     pixels = texture.download()
     if pixels.dtype != np.uint8:
-        raise TypeError(f"expected the table's texture as uint8, got {pixels.dtype}")
+        raise TypeError(f"expected a uint8 texture, got {pixels.dtype}")
     colour = pixels[..., :3].astype(np.float64) / 255.0
     if texture.is_srgb:
-        colour = _linear_to_srgb(_srgb_to_linear(colour) * np.asarray(tint))
+        colour = _linear_to_srgb(np.clip(remap(_srgb_to_linear(colour)), 0.0, 1.0))
     else:
-        colour = colour * np.asarray(tint)
+        colour = remap(colour)
     tinted = pixels.copy()
     tinted[..., :3] = np.clip(np.round(colour * 255.0), 0, 255).astype(np.uint8)
     return sapien.render.RenderTexture2D(
@@ -784,7 +812,7 @@ def _tint_table(env, tint: Color) -> None:
         texture = part.material.base_color_texture
         r, g, b, a = part.material.base_color
         tinted.append((
-            None if texture is None else _tinted_texture(texture, tint),
+            None if texture is None else _remapped_texture(texture, lambda c: c * np.asarray(tint)),
             [r * tint[0], g * tint[1], b * tint[2], a],
         ))
     for entity in entities:
@@ -799,6 +827,90 @@ def _tint_table(env, tint: Color) -> None:
                 part.material.base_color = base_color
             else:
                 part.material.base_color_texture = texture
+
+
+def _rgb_to_hsv(rgb: np.ndarray) -> np.ndarray:
+    """`colorsys.rgb_to_hsv` over an (..., 3) array, hue in [0, 1)."""
+    r, g, b = np.moveaxis(rgb, -1, 0)
+    value = rgb.max(axis=-1)
+    delta = value - rgb.min(axis=-1)
+    safe = np.where(delta > 0, delta, 1.0)
+    hue = np.select(
+        [delta == 0, value == r, value == g],
+        [0.0, ((g - b) / safe) % 6.0, (b - r) / safe + 2.0],
+        default=(r - g) / safe + 4.0,
+    ) / 6.0
+    saturation = np.where(value > 0, delta / np.where(value > 0, value, 1.0), 0.0)
+    return np.stack([hue % 1.0, saturation, value], axis=-1)
+
+
+def _hsv_to_rgb(hsv: np.ndarray) -> np.ndarray:
+    """`colorsys.hsv_to_rgb` over an (..., 3) array."""
+    hue, saturation, value = np.moveaxis(hsv, -1, 0)
+    sector = np.floor(hue * 6.0)
+    f = hue * 6.0 - sector
+    p, q, t = value * (1 - saturation), value * (1 - saturation * f), value * (1 - saturation * (1 - f))
+    sector = sector.astype(int) % 6
+    channels = [
+        np.choose(sector, [value, q, p, p, t, value]),
+        np.choose(sector, [t, value, value, q, p, p]),
+        np.choose(sector, [p, p, t, value, value, q]),
+    ]
+    return np.stack(channels, axis=-1)
+
+
+def _rotate_hue(linear_rgb: np.ndarray, degrees: float) -> np.ndarray:
+    """`linear_rgb` (..., 3) turned `degrees` round the HSV hue wheel of its sRGB encoding, the
+    space "hue" is ordinarily meant in. Saturation and value are kept, so greys stay grey."""
+    hsv = _rgb_to_hsv(_linear_to_srgb(np.clip(linear_rgb, 0.0, 1.0)))
+    hsv[..., 0] = (hsv[..., 0] + degrees / 360.0) % 1.0
+    return _srgb_to_linear(_hsv_to_rgb(hsv))
+
+
+def _shift_object_hues(env, degrees: float) -> None:
+    """Turn the colours of every task object in `env` `degrees` round the hue wheel: each scene
+    actor but the table scene's own (table and ground) and the lighting `props`, so the cube, the
+    goal target and site, the peg -- whatever the task built. The robot is an articulation, not an
+    actor, and is untouched.
+
+    Like `_tint_table`, only effective from `_load_scene`, before the scene first renders. Every
+    original colour is read before any is written, and each written as a function of its original,
+    so a material shared between parallel envs is rotated once, not once per env; a textured
+    object gets a new, rotated texture per entity rather than an in-place upload (see
+    `_remapped_texture`). Objects are not assumed identical across envs, since some tasks draw a
+    different one per env.
+    """
+    table_scene = getattr(env, "table_scene", None)
+    fixtures = set() if table_scene is None else {obj.name for obj in table_scene.scene_objects}
+    edits = []
+    for name, actor in env.scene.actors.items():
+        if name in fixtures or name.startswith("lighting_prop_"):
+            continue
+        for entity in actor._objs:
+            body = entity.find_component_by_type(sapien.render.RenderBodyComponent)
+            if body is None:
+                continue
+            for shape in body.render_shapes:
+                for part in shape.parts:
+                    material = part.material
+                    edits.append((material, list(material.base_color), material.base_color_texture))
+    if not edits:
+        raise ValueError(
+            f"{type(env).__name__} has no task objects to recolour, so a lighting condition with an "
+            f"object_hue of {degrees} would render the unshifted scene."
+        )
+    rotated = [
+        (
+            material,
+            [*_rotate_hue(np.asarray(base_color[:3]), degrees).tolist(), base_color[3]],
+            None if texture is None else _remapped_texture(texture, lambda c: _rotate_hue(c, degrees)),
+        )
+        for material, base_color, texture in edits
+    ]
+    for material, base_color, texture in rotated:
+        material.base_color = base_color
+        if texture is not None:
+            material.base_color_texture = texture
 
 
 class LightingMixin:
@@ -856,11 +968,13 @@ class LightingMixin:
         # unlike `_load_lighting`, this adds to the task's own scene rather than replacing it --
         # the task still builds its table, robot workspace and objects; a condition with `props`
         # (currently just "shadows") gets its occluder added alongside them, and one with a
-        # `table_tint` has that table recoloured
+        # `table_tint` has that table recoloured, and one with an `object_hue` the task's objects
         super()._load_scene(options)
         _add_scene_props(self.scene, self._lighting.props)
         if self._lighting.table_tint != (1.0, 1.0, 1.0):
             _tint_table(self, self._lighting.table_tint)
+        if self._lighting.object_hue != 0.0:
+            _shift_object_hues(self, self._lighting.object_hue)
 
 
 def supports_lighting(task_name: str) -> bool:
