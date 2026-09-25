@@ -1,6 +1,7 @@
-"""Render a grid of env screenshots: one row per task, and five columns -- the episode's start
+"""Render a grid of env screenshots: one row per task, and six columns -- the episode's start
 state, the wrist camera the policy observes at that start, the goal state the task's visual PPO
-expert reaches from it, and the same start state under two of the shifted lighting conditions.
+expert reaches from it, and the same start state under the three visual perturbations evaluated
+(brighter lights, warmer lights, and the task objects' colours shifted round the hue wheel).
 
     python environment_screenshots.py [--out PATH] [--seed N] [--device cuda:N]
 
@@ -35,11 +36,12 @@ TASKS = (
     ("PickCube-v1.1", "PickCube-v1.1"),
 )
 
-# column title, lighting preset. The first three columns are under the stock lighting; these are
-# the start frame again, relit.
+# column title, lighting preset. The first three columns are under the stock ("default")
+# condition; these are the start frame again, under each perturbation.
 LIGHTING_COLUMNS = (
-    ("Bright", "bright-set-0.675-2.25"),
+    ("Bright", "bright-set-0.75-2.5"),
     ("Warm", "warm-set-1.1"),
+    ("Colour-Shift", "object-hue-30"),
 )
 COLUMN_TITLES = ("Start", "Visual Obs", "Goal") + tuple(title for title, _ in LIGHTING_COLUMNS)
 """All but "Visual Obs" come from `env.render()`, i.e. each task's own `render_camera`
@@ -108,7 +110,7 @@ def render_expert_episode(task_id, cfg, seed, backends, device):
 
 
 def render_relit_start(cfg, seed, backends, lighting):
-    """The render-camera frame at the start of the same episode, lit by `lighting`.
+    """The render-camera frame at the start of the same episode, under `lighting`.
 
     Built through the same `build_env`, camera view and sim backend as the expert episode: the
     reset randomization draws from the sim device's torch generator, so a different backend would
