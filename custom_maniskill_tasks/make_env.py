@@ -104,7 +104,10 @@ def make_env(
             about 2000 K / 24400 K), "dark-table" / "very-dark-table" or "table-set-<scale>" /
             "table-set-<r>-<g>-<b>" to recolour the table and leave the lights alone (e.g.
             "table-set-0.4"), "object-hue-<degrees>" to turn the task objects' colours that far
-            round the hue wheel (e.g. "object-hue-60"), a "+"-joined stack of those shift names for a condition that combines several at once
+            round the hue wheel (e.g. "object-hue-60"), "domain-randomization" (or a list of
+            preset names) to draw a fresh condition per parallel env on every reset -- one of
+            `DOMAIN_RANDOMIZATION_PRESETS` (or of the list) at a severity uniform between the
+            default and that preset, see `LightingMixin` -- a "+"-joined stack of those shift names for a condition that combines several at once
             (e.g. "very-dim+very-warm+side"), or a config dict for a one-off condition. Only the
             project's own `-v1.1` ids support it. It is a real env kwarg, so a non-default
             condition is recorded into any trajectory collected through it; a "default" one is not
@@ -158,7 +161,12 @@ def make_env(
                 f"project's own task ids and its class takes no `lighting` kwarg. Use the "
                 f"corresponding -v1.1 id (see `TASKS_IN_USE`), which does."
             )
-        env_kwargs["lighting"] = lighting
+        # a plain list, so a domain-randomization list from a hydra ListConfig is recorded into
+        # env.spec.kwargs (and any trajectory json) as json
+        env_kwargs["lighting"] = (
+            list(lighting) if isinstance(lighting, Sequence) and not isinstance(lighting, str)
+            else lighting
+        )
 
     with camera_view_applied(view, task_name, wrist_only=wrist_only):
         env = gym.make(

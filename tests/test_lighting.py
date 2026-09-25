@@ -19,8 +19,11 @@ import torch
 
 from mani_skill.envs.utils.randomization.batched_rng import BatchedRNG
 
+from custom_maniskill_tasks import lighting
 from custom_maniskill_tasks import (
     DEFAULT_LIGHTING,
+    DOMAIN_RANDOMIZATION,
+    DOMAIN_RANDOMIZATION_PRESETS,
     LIGHTING_PRESETS,
     LightingConfig,
     apply_lighting,
@@ -328,6 +331,100 @@ def test_object_hue_turns_only_the_task_objects():
             raise AssertionError(f"{bad!r} was accepted")
 
 
+def test_domain_randomization_resolves_to_its_presets():
+    """"domain-randomization" is the project's four perturbations; a list names others; and every
+    preset that cannot differ between parallel envs, or has no single severity-1 form, is refused."""
+    config = canonical_lighting(DOMAIN_RANDOMIZATION)
+    assert [name for name, _ in config.domain_randomization] == list(DOMAIN_RANDOMIZATION_PRESETS)
+    assert replace(config, domain_randomization=()) == DEFAULT_LIGHTING
+    assert canonical_lighting(["warm-set-1.1", "object-hue-30"]).domain_randomization == (
+        ("warm-set-1.1", canonical_lighting("warm-set-1.1")),
+        ("object-hue-30", canonical_lighting("object-hue-30")),
+    )
+
+    # severity 0 is the default and 1 the preset itself, for every preset in the list
+    for name, endpoint in config.domain_randomization:
+        assert lighting._interpolated(DEFAULT_LIGHTING, endpoint, 0.0) == DEFAULT_LIGHTING
+        assert lighting._interpolated(DEFAULT_LIGHTING, endpoint, 1.0) == endpoint, name
+    halfway = lighting._interpolated(DEFAULT_LIGHTING, canonical_lighting("bright-set-0.75-2.5"), 0.5)
+    assert np.allclose(halfway.ambient, 0.525) and np.allclose(halfway.lights[0].color, 1.75)
+    assert lighting._interpolated(DEFAULT_LIGHTING, canonical_lighting("object-hue-30"), 0.5).object_hue == 15.0
+
+    for bad in (["table-set-0.4"], ["shadows"], ["random"], [DOMAIN_RANDOMIZATION], [], ["warm", 3]):
+        try:
+            canonical_lighting(bad)
+        except (ValueError, TypeError):
+            pass
+        else:
+            raise AssertionError(f"{bad!r} was accepted for domain randomization")
+    try:
+        canonical_lighting(DOMAIN_RANDOMIZATION + "+warm")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("domain randomization was accepted inside a stack")
+
+
+def _randomized_reset(env, seed):
+    obs, _ = env.reset(seed=seed)
+    image = obs["sensor_data"]["hand_camera"]["rgb"]
+    image = np.asarray(image.cpu() if isinstance(image, torch.Tensor) else image)[0]
+    (drawn,) = env.unwrapped.episode_lighting
+    return image, drawn
+
+
+def test_domain_randomization_redraws_every_reset():
+    """Each reset rebuilds the scene under a fresh draw, the same seed redraws the same condition,
+    and the draw reaches the rendered frame -- lights, ambient and object hue alike."""
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", lighting=DOMAIN_RANDOMIZATION)
+    try:
+        assert env.unwrapped.reconfiguration_freq == 1
+        draws = {seed: _randomized_reset(env, seed) for seed in range(12)}
+        presets = {drawn.preset for _, drawn in draws.values()}
+        assert len(presets) >= 3, f"12 resets only ever drew {presets}"
+        severities = [drawn.severity for _, drawn in draws.values()]
+        assert len(set(severities)) == len(severities) and all(0.0 <= s < 1.0 for s in severities)
+
+        again, drawn_again = _randomized_reset(env, 3)
+        assert drawn_again == draws[3][1], "the same reset seed drew a different condition"
+        assert np.array_equal(again, draws[3][0]), "the same draw rendered a different frame"
+
+        # an unseeded reset draws anew rather than repeating the last condition
+        env.reset(seed=0)
+        unseeded = [env.unwrapped.episode_lighting[0] for _ in range(4) if env.reset() is not None]
+        assert len({(d.preset, d.severity) for d in unseeded}) == 4, "unseeded resets repeated a draw"
+
+        # the drawn object hue is what the cube is built with
+        seed, (_, hue_draw) = next((k, v) for k, v in draws.items() if v[1].preset == "object-hue-30")
+        _randomized_reset(env, seed)
+        cube = env.unwrapped.scene.actors["cube"]._objs[0].find_component_by_type(sapien.render.RenderBodyComponent)
+        colour = np.asarray(cube.render_shapes[0].parts[0].material.base_color[:3])
+        expected = lighting._rotate_hue(np.array([0.047, 0.165, 0.627]), 30.0 * hue_draw.severity)
+        assert np.allclose(colour, expected, atol=2e-3), f"cube is {colour}, the draw asked for {expected}"
+    finally:
+        env.close()
+
+    try:
+        make_env(TASK, num_envs=1, sim_backend="physx_cpu", lighting=DOMAIN_RANDOMIZATION, reconfiguration_freq=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("domain randomization accepted reconfiguration_freq=0")
+
+
+def test_domain_randomization_over_default_alone_is_the_stock_scene():
+    """Randomizing over just "default" goes through every per-env path (a light per sub-scene,
+    its own material per entity) and has to come out byte-identical to the default scene."""
+    baseline = _hand_frame()
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", lighting=["default"])
+    try:
+        image, drawn = _randomized_reset(env, 7)
+    finally:
+        env.close()
+    assert drawn.preset == "default"
+    assert np.array_equal(image, baseline), "per-env lighting of the default does not render the default"
+
+
 def test_unknown_preset_in_a_stack_is_rejected():
     """A misspelling inside a stack has to raise, same as a misspelled lone preset name."""
     try:
@@ -483,6 +580,9 @@ if __name__ == "__main__":
         test_hue_set_slides_along_the_blackbody_curve,
         test_table_set_tints_only_the_table,
         test_object_hue_turns_only_the_task_objects,
+        test_domain_randomization_resolves_to_its_presets,
+        test_domain_randomization_redraws_every_reset,
+        test_domain_randomization_over_default_alone_is_the_stock_scene,
         test_unknown_preset_in_a_stack_is_rejected,
         test_a_task_without_the_mixin_says_so,
         test_dict_conditions_reach_the_scene_and_survive_json,

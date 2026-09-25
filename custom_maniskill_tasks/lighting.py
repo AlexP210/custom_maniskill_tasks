@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -108,6 +109,12 @@ class LightingConfig:
     object_hue: float = 0.0
     """Degrees the hue of every task object's colours is rotated by (the table, ground, robot and
     `props` excluded); see `_shift_object_hues`. Appearance again, not light, for the same reason."""
+    domain_randomization: tuple[tuple[str, "LightingConfig"], ...] = ()
+    """Per-episode domain randomization, as (preset name, that preset's config) pairs. Non-empty
+    means every reset rebuilds the scene and each parallel env draws its own condition for the
+    episode: one of these presets, uniformly, at a severity drawn uniformly from [0, 1] between
+    this config (the default) at 0 and the preset at 1. See `domain_randomized` and
+    `LightingMixin`."""
 
 
 DEFAULT_AMBIENT: Color = (0.3, 0.3, 0.3)
@@ -448,6 +455,129 @@ def _effect(part: str) -> Callable[[LightingConfig], LightingConfig] | None:
     return None
 
 
+DOMAIN_RANDOMIZATION = "domain-randomization"
+"""The name `lighting` takes for per-episode domain randomization over `DOMAIN_RANDOMIZATION_PRESETS`;
+a list of preset names randomizes over those instead."""
+DOMAIN_RANDOMIZATION_PRESETS = (
+    "default",
+    "bright-set-0.75-2.5",
+    "warm-set-1.1",
+    "object-hue-30",
+)
+"""The visual perturbations this project evaluates under, each at its full ("official") severity;
+`"default"` among them keeps a share of episodes unperturbed."""
+
+
+def domain_randomized(presets: Sequence[str]) -> LightingConfig:
+    """`DEFAULT_LIGHTING`, randomized per episode and per parallel env over `presets`.
+
+    Each preset has to be one a severity can be dialled between: a fixed condition whose lights
+    match the default's one for one, and which changes only the lights, the ambient and the
+    object hue. Those are the parts of a scene that can differ between parallel envs -- a table
+    tint cannot (every env's table shares one textured material, see `_tint_table`), a prop
+    cannot be half-built, and a preset that already randomizes has no single severity-1 form.
+    Each is refused by name rather than quietly dropped from the draw.
+    """
+    if isinstance(presets, (str, bytes)) or not isinstance(presets, Sequence) or not presets:
+        raise ValueError(
+            f"domain randomization needs a non-empty list of preset names, got {presets!r}"
+        )
+    endpoints = []
+    for name in presets:
+        if not isinstance(name, str):
+            raise TypeError(f"domain randomization presets must be names, got {name!r}")
+        if name == DOMAIN_RANDOMIZATION:
+            raise ValueError(f"{DOMAIN_RANDOMIZATION!r} cannot be one of its own presets")
+        config = canonical_lighting(name)
+        problems = []
+        if config.randomization is not None or config.domain_randomization:
+            problems.append("it randomizes already")
+        if config.props:
+            problems.append("it adds props to the scene")
+        if config.table_tint != DEFAULT_LIGHTING.table_tint:
+            problems.append("it tints the table, which every parallel env shares")
+        if len(config.lights) != len(DEFAULT_LIGHTING.lights) or any(
+            light.shadow != base.shadow for light, base in zip(config.lights, DEFAULT_LIGHTING.lights)
+        ):
+            problems.append("its lights are not the default's lights re-coloured or re-aimed")
+        if problems:
+            raise ValueError(
+                f"Lighting preset {name!r} cannot be domain-randomized: {'; '.join(problems)}"
+            )
+        endpoints.append((name, config))
+    return replace(DEFAULT_LIGHTING, domain_randomization=tuple(endpoints))
+
+
+def _slerp(start: Color, end: Color, t: float) -> Color:
+    """The direction `t` of the way from `start` to `end` along the arc between them, returned
+    as `start` / `end` themselves at the endpoints (see `_key_direction_towards_side`)."""
+    if t == 0.0 or start == end:
+        return start
+    if t == 1.0:
+        return end
+    a = np.asarray(start) / np.linalg.norm(start)
+    b = np.asarray(end) / np.linalg.norm(end)
+    angle = np.arccos(np.clip(a @ b, -1.0, 1.0))
+    if angle < 1e-9:
+        return start
+    direction = (np.sin((1.0 - t) * angle) * a + np.sin(t * angle) * b) / np.sin(angle)
+    return tuple(float(component) for component in direction)
+
+
+def _interpolated(start: LightingConfig, end: LightingConfig, t: float) -> LightingConfig:
+    """The condition `t` of the way from `start` (at 0) to `end` (at 1): colours and levels
+    linearly, light directions along the arc, the object hue in degrees. Linear in the tint is
+    what keeps a hue slider's constant luminance at every severity, luminance being linear in it.
+    """
+    lerp = lambda a, b: tuple(float((1.0 - t) * x + t * y) for x, y in zip(a, b))
+    return replace(
+        start,
+        ambient=lerp(start.ambient, end.ambient),
+        lights=tuple(
+            replace(
+                light,
+                color=lerp(light.color, target.color),
+                direction=_slerp(light.direction, target.direction, t),
+            )
+            for light, target in zip(start.lights, end.lights)
+        ),
+        object_hue=(1.0 - t) * start.object_hue + t * end.object_hue,
+        domain_randomization=(),
+    )
+
+
+@dataclass(frozen=True)
+class EpisodeLighting:
+    """What one parallel env drew for its episode under domain randomization."""
+
+    preset: str
+    severity: float
+    config: LightingConfig
+
+
+def _drawn_episode_lighting(config: LightingConfig, episode_rng, num_scenes: int) -> list[EpisodeLighting]:
+    """One `EpisodeLighting` per parallel env, off the batched episode rng (see `_drawn_configs`
+    for why batched): a preset uniformly from `config.domain_randomization`, and a severity
+    uniformly from [0, 1)."""
+    if episode_rng.batch_size != num_scenes:
+        raise AssertionError(
+            f"episode rng is batched over {episode_rng.batch_size} envs but the scene has "
+            f"{num_scenes} sub-scenes"
+        )
+    presets = config.domain_randomization
+    choice = np.minimum((episode_rng.uniform(0.0, 1.0) * len(presets)).astype(int), len(presets) - 1)
+    severity = episode_rng.uniform(0.0, 1.0)
+    drawn = []
+    for i in range(num_scenes):
+        name, endpoint = presets[choice[i]]
+        drawn.append(EpisodeLighting(
+            preset=name,
+            severity=float(severity[i]),
+            config=_interpolated(replace(config, domain_randomization=()), endpoint, float(severity[i])),
+        ))
+    return drawn
+
+
 LIGHTING_PRESETS: dict[str, LightingConfig] = {
     "default": DEFAULT_LIGHTING,
     **{name: effect(DEFAULT_LIGHTING) for name, effect in _PRESET_EFFECTS.items()},
@@ -590,6 +720,9 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
     multiply the table's colours by that tint and leave the lights alone, and
     `"object-hue-<degrees>"`, which turns every task object's colours that far round the hue wheel.
 
+    `"domain-randomization"`, or a list of preset names, randomizes per episode and per parallel
+    env over `DOMAIN_RANDOMIZATION_PRESETS` or that list; see `domain_randomized`.
+
     Worth doing before `gym.make` for the same reason `canonical_camera_view` is: a misspelled
     preset that fell through to "no override" would build a perfectly working env showing the
     unshifted scene, and nothing downstream would ever say so.
@@ -597,6 +730,8 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
     if isinstance(lighting, LightingConfig):
         return lighting
     if isinstance(lighting, str):
+        if lighting == DOMAIN_RANDOMIZATION:
+            return domain_randomized(DOMAIN_RANDOMIZATION_PRESETS)
         try:
             return LIGHTING_PRESETS[lighting]
         except KeyError:
@@ -615,8 +750,11 @@ def canonical_lighting(lighting: str | Mapping | LightingConfig) -> LightingConf
         )
     if isinstance(lighting, Mapping):
         return lighting_config_from_dict(lighting)
+    if isinstance(lighting, Sequence) and not isinstance(lighting, bytes):
+        return domain_randomized(list(lighting))
     raise TypeError(
-        f"lighting must be a preset name, a config dict or a LightingConfig, got {lighting!r}"
+        f"lighting must be a preset name, a list of them (domain randomization), a config dict "
+        f"or a LightingConfig, got {lighting!r}"
     )
 
 
@@ -681,8 +819,18 @@ def _add_light(scene, light: DirectionalLight, enable_shadow: bool, scene_idxs=N
     )
 
 
-def apply_lighting(scene, config: LightingConfig, enable_shadow: bool, episode_rng=None) -> None:
+def apply_lighting(
+    scene,
+    config: LightingConfig,
+    enable_shadow: bool,
+    episode_rng=None,
+    per_scene: Sequence[LightingConfig] | None = None,
+) -> None:
     """Build `config`'s lights into `scene`. The body of a `_load_lighting` override.
+
+    `per_scene` is one already-drawn config per parallel env, which is how a domain-randomized
+    config arrives (`LightingMixin` draws it in `_load_scene`, which runs first, since the object
+    hues it draws have to be applied there); each sub-scene is then lit by its own.
 
     A fixed config lights every parallel env identically. A randomizing one draws per sub-scene,
     which is per parallel env and *not* per episode: `_load_lighting` runs only inside
@@ -696,7 +844,9 @@ def apply_lighting(scene, config: LightingConfig, enable_shadow: bool, episode_r
     conditions at once) and the wrong one for measuring performance under a distribution of
     conditions -- for that, build the env once per named preset.
     """
-    if config.randomization is None:
+    if config.domain_randomization and per_scene is None:
+        raise ValueError("A domain-randomized lighting config needs its per-env draws.")
+    if config.randomization is None and per_scene is None:
         scene.set_ambient_light([float(channel) for channel in config.ambient])
         for light in config.lights:
             _add_light(scene, light, enable_shadow)
@@ -709,12 +859,16 @@ def apply_lighting(scene, config: LightingConfig, enable_shadow: bool, episode_r
             "`add_directional_light` adds a single light for all of them. Use a fixed preset "
             "here, or build the env with parallel_in_single_scene=False."
         )
-    if episode_rng is None:
-        raise ValueError("A randomizing lighting config needs the env's batched episode rng.")
+    if per_scene is None:
+        if episode_rng is None:
+            raise ValueError("A randomizing lighting config needs the env's batched episode rng.")
+        per_scene = _drawn_configs(config, episode_rng, len(scene.sub_scenes))
+    if len(per_scene) != len(scene.sub_scenes):
+        raise AssertionError(
+            f"{len(per_scene)} per-env lighting configs for {len(scene.sub_scenes)} sub-scenes"
+        )
 
-    for scene_idx, drawn in enumerate(
-        _drawn_configs(config, episode_rng, len(scene.sub_scenes))
-    ):
+    for scene_idx, drawn in enumerate(per_scene):
         # per-sub-scene, because `set_ambient_light` writes the same colour to all of them
         scene.sub_scenes[scene_idx].render_system.ambient_light = [
             float(channel) for channel in drawn.ambient
@@ -867,7 +1021,68 @@ def _rotate_hue(linear_rgb: np.ndarray, degrees: float) -> np.ndarray:
     return _srgb_to_linear(_hsv_to_rgb(hsv))
 
 
-def _shift_object_hues(env, degrees: float) -> None:
+_MATERIAL_TEXTURES = (
+    "base_color_texture",
+    "emission_texture",
+    "metallic_texture",
+    "normal_texture",
+    "roughness_texture",
+    "transmission_texture",
+)
+
+
+def _copied_material(material):
+    """A new `RenderMaterial` with every one of `material`'s values and textures."""
+    copy = sapien.render.RenderMaterial(
+        emission=list(material.emission),
+        base_color=list(material.base_color),
+        specular=material.specular,
+        roughness=material.roughness,
+        metallic=material.metallic,
+        transmission=material.transmission,
+        ior=material.ior,
+        transmission_roughness=material.transmission_roughness,
+    )
+    for name in _MATERIAL_TEXTURES:
+        texture = getattr(material, name)
+        if texture is not None:
+            setattr(copy, name, texture)
+    return copy
+
+
+@contextmanager
+def _own_materials_per_entity(scene):
+    """Within this, every actor built through `scene` gets its own copy of each visual material
+    per parallel env, where ManiSkill's `ActorBuilder.build` would hand one material to all of
+    them. Materials have no setter once built, so a per-env colour (a domain-randomized object
+    hue) needs them apart from the start. Identical values, so the render is unchanged.
+
+    A mesh loaded from a file (the table's glb) carries its own materials, not the builder's, and
+    stays shared -- which is why a table tint cannot be domain-randomized.
+    """
+    create_actor_builder = scene.create_actor_builder
+
+    def create_actor_builder_with_own_materials(*args, **kwargs):
+        builder = create_actor_builder(*args, **kwargs)
+        build_entity = builder.build_entity
+
+        def build_entity_with_own_materials():
+            for record in builder.visual_records:
+                if record.material is not None:
+                    record.material = _copied_material(record.material)
+            return build_entity()
+
+        builder.build_entity = build_entity_with_own_materials
+        return builder
+
+    scene.create_actor_builder = create_actor_builder_with_own_materials
+    try:
+        yield
+    finally:
+        del scene.create_actor_builder
+
+
+def _shift_object_hues(env, degrees: float | Sequence[float]) -> None:
     """Turn the colours of every task object in `env` `degrees` round the hue wheel: each scene
     actor but the table scene's own (table and ground) and the lighting `props`, so the cube, the
     goal target and site, the peg -- whatever the task built. The robot is an articulation, not an
@@ -879,21 +1094,33 @@ def _shift_object_hues(env, degrees: float) -> None:
     object gets a new, rotated texture per entity rather than an in-place upload (see
     `_remapped_texture`). Objects are not assumed identical across envs, since some tasks draw a
     different one per env.
+
+    `degrees` is one angle for every env, or one per parallel env (domain randomization). Per env
+    only works on materials each env has to itself (`_own_materials_per_entity`), so every
+    colour is read back afterwards: one that is not what its env asked for means another env's
+    write landed on a shared material, and raises rather than rendering the wrong condition.
     """
+    num_envs = env.num_envs
+    per_env = np.broadcast_to(np.asarray(degrees, dtype=np.float64), (num_envs,))
     table_scene = getattr(env, "table_scene", None)
     fixtures = set() if table_scene is None else {obj.name for obj in table_scene.scene_objects}
     edits = []
     for name, actor in env.scene.actors.items():
         if name in fixtures or name.startswith("lighting_prop_"):
             continue
-        for entity in actor._objs:
+        for entity, scene_idx in zip(actor._objs, np.asarray(actor._scene_idxs.cpu()).tolist()):
             body = entity.find_component_by_type(sapien.render.RenderBodyComponent)
             if body is None:
                 continue
             for shape in body.render_shapes:
                 for part in shape.parts:
                     material = part.material
-                    edits.append((material, list(material.base_color), material.base_color_texture))
+                    edits.append((
+                        material,
+                        list(material.base_color),
+                        material.base_color_texture,
+                        float(per_env[scene_idx]),
+                    ))
     if not edits:
         raise ValueError(
             f"{type(env).__name__} has no task objects to recolour, so a lighting condition with an "
@@ -902,15 +1129,27 @@ def _shift_object_hues(env, degrees: float) -> None:
     rotated = [
         (
             material,
-            [*_rotate_hue(np.asarray(base_color[:3]), degrees).tolist(), base_color[3]],
-            None if texture is None else _remapped_texture(texture, lambda c: _rotate_hue(c, degrees)),
+            [*_rotate_hue(np.asarray(base_color[:3]), angle).tolist(), base_color[3]]
+            if angle != 0.0 else base_color,
+            None if texture is None or angle == 0.0
+            else _remapped_texture(texture, lambda c, angle=angle: _rotate_hue(c, angle)),
+            angle,
         )
-        for material, base_color, texture in edits
+        for material, base_color, texture, angle in edits
     ]
-    for material, base_color, texture in rotated:
+    for material, base_color, texture, angle in rotated:
+        if angle == 0.0:
+            continue
         material.base_color = base_color
         if texture is not None:
             material.base_color_texture = texture
+    for material, base_color, _, _ in rotated:
+        if not np.allclose(list(material.base_color), base_color, atol=1e-5):
+            raise AssertionError(
+                f"a task object's material reads {list(material.base_color)} where its env asked "
+                f"for {base_color}: parallel envs share this material, so they cannot be given "
+                "different object hues"
+            )
 
 
 class LightingMixin:
@@ -924,15 +1163,31 @@ class LightingMixin:
 
     The config is resolved and stored before `super().__init__`, because `BaseEnv.__init__`
     reconfigures (and so calls `_load_lighting` and `_load_scene`) before it returns.
+
+    Under domain randomization (`lighting="domain-randomization"` or a list of preset names)
+    every reset reconfigures -- `reconfiguration_freq=1`, the only way to change the lights,
+    which the renderer does not pick up once built -- and each reconfiguration draws a fresh
+    condition per parallel env, seeded by that reset's episode seed: the same reset seed redraws
+    the same conditions, an unseeded reset draws new ones. ManiSkill cannot reconfigure on a
+    partial reset, so every env has to reset together, which the `-v1.1` ids' never-terminating
+    episodes guarantee. `episode_lighting` says what each env drew.
     """
 
     def __init__(
         self,
         *args,
-        lighting: str | Mapping | LightingConfig = DEFAULT_LIGHTING_PRESET,
+        lighting: str | Sequence[str] | Mapping | LightingConfig = DEFAULT_LIGHTING_PRESET,
         **kwargs,
     ):
         self._lighting = canonical_lighting(lighting)
+        self._episode_lighting: tuple[EpisodeLighting, ...] | None = None
+        if self._lighting.domain_randomization:
+            frequency = kwargs.setdefault("reconfiguration_freq", 1)
+            if frequency != 1:
+                raise ValueError(
+                    f"Domain-randomized lighting redraws on every reset, which needs "
+                    f"reconfiguration_freq=1, but reconfiguration_freq={frequency} was passed."
+                )
         self._warn_if_task_lights_itself()
         super().__init__(*args, **kwargs)
 
@@ -940,6 +1195,12 @@ class LightingMixin:
     def lighting(self) -> LightingConfig:
         """The condition this env was built with; `DEFAULT_LIGHTING` unless asked otherwise."""
         return self._lighting
+
+    @property
+    def episode_lighting(self) -> tuple[EpisodeLighting, ...] | None:
+        """Under domain randomization, what each parallel env drew for the current episode
+        (preset, severity, and the config built from them); None otherwise."""
+        return self._episode_lighting
 
     def _warn_if_task_lights_itself(self) -> None:
         mro = type(self).__mro__
@@ -962,18 +1223,33 @@ class LightingMixin:
             self._lighting,
             enable_shadow=self.enable_shadow,
             episode_rng=self._batched_episode_rng,
+            per_scene=None if self._episode_lighting is None
+            else [drawn.config for drawn in self._episode_lighting],
         )
 
     def _load_scene(self, options: dict):
         # unlike `_load_lighting`, this adds to the task's own scene rather than replacing it --
         # the task still builds its table, robot workspace and objects; a condition with `props`
         # (currently just "shadows") gets its occluder added alongside them, and one with a
-        # `table_tint` has that table recoloured, and one with an `object_hue` the task's objects
-        super()._load_scene(options)
+        # `table_tint` has that table recoloured, and one with an `object_hue` the task's objects.
+        # A domain-randomized one draws each env's condition here, after the task's own scene
+        # (so the task's draws off the episode rng are the same as without it) and before
+        # `_load_lighting`, which builds the lights from it.
+        randomized = bool(self._lighting.domain_randomization)
+        with _own_materials_per_entity(self.scene) if randomized else nullcontext():
+            super()._load_scene(options)
+        if randomized:
+            self._episode_lighting = tuple(_drawn_episode_lighting(
+                self._lighting, self._batched_episode_rng, self.num_envs
+            ))
         _add_scene_props(self.scene, self._lighting.props)
         if self._lighting.table_tint != (1.0, 1.0, 1.0):
             _tint_table(self, self._lighting.table_tint)
-        if self._lighting.object_hue != 0.0:
+        if randomized:
+            hues = [drawn.config.object_hue for drawn in self._episode_lighting]
+            if any(hue != 0.0 for hue in hues):
+                _shift_object_hues(self, hues)
+        elif self._lighting.object_hue != 0.0:
             _shift_object_hues(self, self._lighting.object_hue)
 
 
@@ -1011,7 +1287,7 @@ def check_lighting(env, config: LightingConfig) -> None:
             f"the built scene has {built}. Something other than this config lit the scene."
         )
 
-    if config.randomization is None:
+    if config.randomization is None and not config.domain_randomization:
         ambient = np.asarray(scene.sub_scenes[0].render_system.ambient_light)[:3]
         if not np.allclose(ambient, config.ambient, atol=1e-5):
             raise ValueError(
