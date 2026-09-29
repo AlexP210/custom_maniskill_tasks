@@ -43,6 +43,9 @@ LIGHTING_COLUMNS = (
     ("Warm", "warm-set-1.1"),
     ("Colour-Shift", "object-hue-30"),
 )
+FONT_SIZE = 38
+"""Column titles and row labels. The row labels break before the task version, since a one-line
+"LiftPegUpright-v1.1" at this size is taller than its row."""
 COLUMN_TITLES = ("Start", "Visual Obs", "Goal") + tuple(title for title, _ in LIGHTING_COLUMNS)
 """All but "Visual Obs" come from `env.render()`, i.e. each task's own `render_camera`
 (`_default_human_render_camera_configs`): the 512x512 three-quarter view ManiSkill's docs and
@@ -166,9 +169,9 @@ def main():
             for spine in ax.spines.values():
                 spine.set_visible(False)
             if row == 0:
-                ax.set_title(title, fontsize=24)
+                ax.set_title(title, fontsize=FONT_SIZE)
             if col == 0:
-                ax.set_ylabel(row_title, fontsize=24)
+                ax.set_ylabel(row_title.replace("-v", "\n-v"), fontsize=FONT_SIZE)
 
     fig.tight_layout()
     # the frames are raster either way; dpi sets the resolution they are embedded at in the PDF
