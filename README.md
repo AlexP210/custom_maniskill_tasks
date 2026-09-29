@@ -58,6 +58,25 @@ ids. `tools/ppo_stages_fast.py` (which collects the datasets) and `tools/replay_
 should needs the same import. Datasets recorded so far name the stock `-v1` ids and replay
 unchanged.
 
+## Distractors
+
+`LiftPegUpright-v1.1` also takes `distractors=True`, which adds four objects borrowed from the
+other tasks to the sides of the table: PickCube's red cube, PushCube's blue cube, PlaceSphere's
+blue sphere and a red sphere of the same size. They sit at `x = ±0.1`, `y = ±0.22`, which is clear of
+the peg's whole spawn area, and each side of the table gets one of each colour. The peg is red and
+blue too, so neither colour nor side is enough to pick it out.
+
+```python
+env = make_env("LiftPegUpright-v1.1", camera_view="wrist", distractors=True)
+```
+
+The flag is off by default, so a bare `gym.make` still builds the scene every dataset was recorded
+in. The objects are dynamic, so the robot can knock them, and they go back to the same poses on every reset.
+They draw nothing from the RNG and nothing reads them. Observations (including `state`),
+reward and success are unchanged; `tests/test_tasks.py` checks this. Like `lighting`, the flag is
+an env kwarg, so a trajectory recorded with it replays with it. In TSD, set
+`task.cfg.distractors=true`.
+
 ## Usage
 
 ```python

@@ -50,7 +50,10 @@ from custom_maniskill_tasks.make_env import TASKS_IN_USE, make_env
 # imported for its side effect: registering the -v1.1 task ids with ManiSkill and gymnasium
 from custom_maniskill_tasks.tasks import (
     CONTROL_MODE,
+    DISTRACTORS,
     FULL_HORIZON_TASKS,
+    Distractor,
+    DistractorsMixin,
     FullHorizonMixin,
     LiftPegUprightFullHorizonEnv,
     PickCubeFullHorizonEnv,
@@ -76,9 +79,12 @@ __all__ = [
     "DEFAULT_LIGHTING",
     "DEFAULT_LIGHTING_PRESET",
     "DINORewardWrapper",
+    "DISTRACTORS",
     "DOMAIN_RANDOMIZATION",
     "DOMAIN_RANDOMIZATION_PRESETS",
     "DirectionalLight",
+    "Distractor",
+    "DistractorsMixin",
     "EpisodeLighting",
     "FULL_HORIZON_TASKS",
     "FOCUSED_CAMERA_EYE",

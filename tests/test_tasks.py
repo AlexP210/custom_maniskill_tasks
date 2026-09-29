@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 import custom_maniskill_tasks  # noqa: F401  (registers the ids under test)
-from custom_maniskill_tasks import FULL_HORIZON_TASKS, make_env
+from custom_maniskill_tasks import DISTRACTORS, FULL_HORIZON_TASKS, make_env
 from mani_skill.utils.assets import is_data_source_downloaded
 from mani_skill.utils.registration import REGISTERED_ENVS
 
@@ -132,12 +132,38 @@ def test_every_id_works_through_make_env():
         env.close()
 
 
+def test_lift_peg_distractors_are_opt_in_and_change_nothing_else():
+    """`distractors=True` adds objects to the scene and nothing to the task."""
+    stock = gym.make("LiftPegUpright-v1.1", num_envs=1, obs_mode="state")
+    with_them = gym.make("LiftPegUpright-v1.1", num_envs=1, obs_mode="state", distractors=True)
+    names = {d.name for d in DISTRACTORS}
+    assert not names & set(stock.unwrapped.scene.actors), "must be off by default"
+    assert names <= set(with_them.unwrapped.scene.actors)
+    assert with_them.spec.kwargs["distractors"] is True, "recorded, so a replay rebuilds it"
+
+    obs_stock, _ = stock.reset(seed=2)
+    obs_with, _ = with_them.reset(seed=2)
+    assert torch.allclose(obs_stock, obs_with), "same peg draw and same state observation"
+    for _ in range(10):
+        obs_stock, reward_stock, _, _, info_stock = stock.step(ACTION)
+        obs_with, reward_with, _, _, info_with = with_them.step(ACTION)
+        assert torch.allclose(obs_stock, obs_with, atol=1e-5)
+        assert torch.allclose(reward_stock, reward_with, atol=1e-5)
+        assert torch.equal(info_stock["success"], info_with["success"])
+    for d in DISTRACTORS:
+        p = with_them.unwrapped.distractors[d.name].pose.p[0].cpu()
+        assert torch.allclose(p, torch.tensor([*d.xy, d.size]), atol=1e-3), (d.name, p)
+    stock.close()
+    with_them.close()
+
+
 if __name__ == "__main__":
     tests = [
         test_ids_are_registered_with_both_registries,
         test_plain_gym_make_needs_no_extra_flags,
         test_dynamics_reward_and_success_are_unchanged,
         test_every_id_works_through_make_env,
+        test_lift_peg_distractors_are_opt_in_and_change_nothing_else,
     ]
     for test in tests:
         test()
