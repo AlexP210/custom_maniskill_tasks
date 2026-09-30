@@ -8,7 +8,8 @@ import numpy as np
 import torch
 
 import custom_maniskill_tasks  # noqa: F401  (registers the ids under test)
-from custom_maniskill_tasks import DISTRACTORS, FULL_HORIZON_TASKS, make_env
+from custom_maniskill_tasks import FULL_HORIZON_TASKS, distractors, make_env
+from custom_maniskill_tasks.viewpoint import in_wrist_view
 from mani_skill.utils.assets import is_data_source_downloaded
 from mani_skill.utils.registration import REGISTERED_ENVS
 
@@ -132,29 +133,83 @@ def test_every_id_works_through_make_env():
         env.close()
 
 
-def test_lift_peg_distractors_are_opt_in_and_change_nothing_else():
-    """`distractors=True` adds objects to the scene and nothing to the task."""
-    stock = gym.make("LiftPegUpright-v1.1", num_envs=1, obs_mode="state")
-    with_them = gym.make("LiftPegUpright-v1.1", num_envs=1, obs_mode="state", distractors=True)
-    names = {d.name for d in DISTRACTORS}
-    assert not names & set(stock.unwrapped.scene.actors), "must be off by default"
-    assert names <= set(with_them.unwrapped.scene.actors)
-    assert with_them.spec.kwargs["distractors"] is True, "recorded, so a replay rebuilds it"
+def _distractor_positions(env):
+    return torch.stack([a.pose.p[0].cpu() for a in env.distractors.values()])
 
-    obs_stock, _ = stock.reset(seed=2)
-    obs_with, _ = with_them.reset(seed=2)
-    assert torch.allclose(obs_stock, obs_with), "same peg draw and same state observation"
-    for _ in range(10):
-        obs_stock, reward_stock, _, _, info_stock = stock.step(ACTION)
-        obs_with, reward_with, _, _, info_with = with_them.step(ACTION)
-        assert torch.allclose(obs_stock, obs_with, atol=1e-5)
-        assert torch.allclose(reward_stock, reward_with, atol=1e-5)
-        assert torch.equal(info_stock["success"], info_with["success"])
-    for d in DISTRACTORS:
-        p = with_them.unwrapped.distractors[d.name].pose.p[0].cpu()
-        assert torch.allclose(p, torch.tensor([*d.xy, d.size]), atol=1e-3), (d.name, p)
-    stock.close()
-    with_them.close()
+
+def _distractors_are_clear_and_visible(env) -> bool:
+    """Every distractor is inside the wrist camera's view and clear of the others and of the
+    boxes its task says to keep clear."""
+    footprints = distractors.ycb_footprints()
+    radii = [footprints[m]["radius"] for m in env.distractor_models]
+    positions = _distractor_positions(env).numpy()
+    for xy, r in zip(positions[:, :2], radii):
+        if not in_wrist_view(np.array([[*xy, 0.0], [*xy, 0.02]]), env.viewpoint).all():
+            return False
+    for i in range(len(positions)):
+        for j in range(i):
+            gap = np.abs(positions[i, :2] - positions[j, :2]).max() - radii[i] - radii[j]
+            if gap < distractors.DISTRACTOR_MARGIN - 1e-3:
+                return False
+    for attr, offset, half in env.distractor_avoid:
+        centre = getattr(env, attr).pose.p[0, :2].cpu().numpy() + np.array(offset)
+        for xy, r in zip(positions[:, :2], radii):
+            if (np.abs(xy - centre) - (np.array(half) + r)).max() < distractors.DISTRACTOR_MARGIN - 1e-3:
+                return False
+    return True
+
+
+def test_distractors_are_opt_in_and_change_nothing_else():
+    """`distractors=N` adds N YCB objects to the scene and nothing to the task."""
+    for task in ("LiftPegUpright-v1.1", "PlaceSphere-v1.1", "PushCube-v1.1", "PickCube-v1.1", "PokeCube-v1.1"):
+        stock = gym.make(task, num_envs=1, obs_mode="state")
+        with_them = gym.make(task, num_envs=1, obs_mode="state", distractors=3)
+        assert not stock.unwrapped.distractors, "must be off by default"
+        assert "distractors" not in stock.spec.kwargs
+        assert len(with_them.unwrapped.distractors) == 3
+        assert with_them.spec.kwargs["distractors"] == 3, "recorded, so a replay rebuilds it"
+
+        obs_stock, _ = stock.reset(seed=2)
+        obs_with, _ = with_them.reset(seed=2)
+        assert torch.allclose(obs_stock, obs_with), (task, "same object draw and state obs")
+        env = with_them.unwrapped
+        assert _distractors_are_clear_and_visible(env), task
+        first = _distractor_positions(env)
+        with_them.reset(seed=2)
+        assert torch.equal(first, _distractor_positions(env)), "same seed, same places"
+        with_them.reset(seed=3)
+        assert not torch.equal(first, _distractor_positions(env)), "a different seed moves them"
+        assert _distractors_are_clear_and_visible(env), task
+        with_them.reset(seed=2)
+        stock.reset(seed=2)
+        for _ in range(10):
+            obs_stock, reward_stock, _, _, info_stock = stock.step(ACTION)
+            obs_with, reward_with, _, _, info_with = with_them.step(ACTION)
+            assert torch.allclose(obs_stock, obs_with, atol=1e-5)
+            assert torch.allclose(reward_stock, reward_with, atol=1e-5)
+            assert torch.equal(info_stock["success"], info_with["success"])
+        stock.close()
+        with_them.close()
+
+
+def test_distractors_take_a_count_and_nothing_else():
+    """A flag from the old copies-of-the-object distractors, or a count out of range, raises."""
+    for bad, error in ((True, TypeError), (1.5, TypeError), (-1, ValueError), (99, ValueError)):
+        try:
+            make_env("PickCube-v1.1", num_envs=1, sim_backend="physx_cpu", distractors=bad)
+        except error:
+            pass
+        else:
+            raise AssertionError(f"distractors={bad!r} was accepted")
+    try:
+        make_env("PickCube-v1", num_envs=1, sim_backend="physx_cpu", distractors=1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a stock -v1 id accepted distractors")
+    env = make_env("PickCube-v1.1", num_envs=1, sim_backend="physx_cpu", distractors=0)
+    assert "distractors" not in env.unwrapped.spec.kwargs, "a default is not passed on"
+    env.close()
 
 
 if __name__ == "__main__":
@@ -163,7 +218,8 @@ if __name__ == "__main__":
         test_plain_gym_make_needs_no_extra_flags,
         test_dynamics_reward_and_success_are_unchanged,
         test_every_id_works_through_make_env,
-        test_lift_peg_distractors_are_opt_in_and_change_nothing_else,
+        test_distractors_are_opt_in_and_change_nothing_else,
+        test_distractors_take_a_count_and_nothing_else,
     ]
     for test in tests:
         test()

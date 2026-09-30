@@ -45,15 +45,40 @@ from custom_maniskill_tasks.lighting import (
     lighting_config_from_dict,
     supports_lighting,
 )
+from custom_maniskill_tasks.distractors import (
+    MAX_DISTRACTORS,
+    YCB_POOL,
+    DistractorsMixin,
+    canonical_distractors,
+)
 from custom_maniskill_tasks.make_env import TASKS_IN_USE, make_env
+from custom_maniskill_tasks.corruption import (
+    DEFAULT_CORRUPTION,
+    CorruptionConfig,
+    CorruptionMixin,
+    canonical_corruption,
+    corrupt_images,
+)
+from custom_maniskill_tasks.perturbations import PerturbationsMixin
+from custom_maniskill_tasks.texture import (
+    DEFAULT_TEXTURE,
+    PATTERNS,
+    TextureMixin,
+    canonical_texture,
+    pattern_mask,
+)
+from custom_maniskill_tasks.viewpoint import (
+    DEFAULT_VIEWPOINT,
+    ViewpointConfig,
+    ViewpointMixin,
+    canonical_viewpoint,
+    check_viewpoint,
+)
 
 # imported for its side effect: registering the -v1.1 task ids with ManiSkill and gymnasium
 from custom_maniskill_tasks.tasks import (
     CONTROL_MODE,
-    DISTRACTORS,
     FULL_HORIZON_TASKS,
-    Distractor,
-    DistractorsMixin,
     FullHorizonMixin,
     LiftPegUprightFullHorizonEnv,
     PickCubeFullHorizonEnv,
@@ -79,12 +104,29 @@ __all__ = [
     "DEFAULT_LIGHTING",
     "DEFAULT_LIGHTING_PRESET",
     "DINORewardWrapper",
-    "DISTRACTORS",
     "DOMAIN_RANDOMIZATION",
     "DOMAIN_RANDOMIZATION_PRESETS",
     "DirectionalLight",
-    "Distractor",
+    "DEFAULT_CORRUPTION",
+    "DEFAULT_TEXTURE",
+    "DEFAULT_VIEWPOINT",
+    "MAX_DISTRACTORS",
+    "PATTERNS",
+    "YCB_POOL",
+    "CorruptionConfig",
+    "CorruptionMixin",
     "DistractorsMixin",
+    "PerturbationsMixin",
+    "TextureMixin",
+    "ViewpointConfig",
+    "ViewpointMixin",
+    "canonical_corruption",
+    "canonical_distractors",
+    "canonical_texture",
+    "canonical_viewpoint",
+    "check_viewpoint",
+    "corrupt_images",
+    "pattern_mask",
     "EpisodeLighting",
     "FULL_HORIZON_TASKS",
     "FOCUSED_CAMERA_EYE",

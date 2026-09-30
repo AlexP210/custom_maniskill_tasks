@@ -4,9 +4,9 @@ task's three-quarter `render_camera` view, and the wrist `hand_camera` a policy 
 
     python lighting_presets_grid.py [--task ID] [--distractors] [--out-prefix PATH] [--seed N]
 
-`--distractors` adds a "distractors" row and column (the task's `distractors=True` scene, see
-`custom_maniskill_tasks.DistractorsMixin`) under every preset. Only tasks that take the kwarg
-support it -- currently LiftPegUpright-v1.1.
+`--distractors` adds a "distractors" row and column (the task's `distractors=3` scene, see
+`custom_maniskill_tasks.DistractorsMixin`) under every preset. For the other appearance kwargs, see
+`perturbation_sheet.py`.
 
 Needs a real render backend (SAPIEN/Vulkan), so run it inside the project's apptainer container
 with --nv on a GPU node.
@@ -27,7 +27,7 @@ PRESETS = (
     "cool", "warm", "very-warm", "side", "shadows",
 )
 DISTRACTORS = "distractors"
-"""Not a lighting preset: the scene with `distractors=True`, under default lighting on the
+"""Not a lighting preset: the scene with `distractors=3`, under default lighting on the
 diagonal and under the other preset off it."""
 
 HAND_CAMERA = "hand_camera"
@@ -36,14 +36,13 @@ HAND_CAMERA = "hand_camera"
 def render_cell(task, names, seed):
     """(render_camera frame, hand_camera frame) for the stack of `names` at reset."""
     lighting = [n for n in names if n != DISTRACTORS]
-    extra = {"distractors": True} if DISTRACTORS in names else {}
     env = make_env(
         task,
         obs_mode="rgb",
         camera_view="wrist",
         lighting="+".join(lighting) if lighting else "default",
+        distractors=3 if DISTRACTORS in names else 0,
         sim_backend="physx_cpu",
-        **extra,
     )
     obs, _ = env.reset(seed=seed)
     hand = np.asarray(obs["sensor_data"][HAND_CAMERA]["rgb"].cpu())[0]

@@ -42,8 +42,9 @@ scene, dynamics, reward and success predicate are the stock task's, asserted in
 `tests/test_tasks.py`. `control_mode` defaults to the `pd_ee_delta_pos` every recording used, and an
 explicit `gym.make(..., control_mode=...)` still wins.
 
-These ids also take a `lighting` kwarg (see [Lighting](#lighting)), which the stock `-v1` ids do
-not.
+These ids also take five kwargs that change how the scene looks: `lighting`, `texture`,
+`distractors`, `viewpoint` and `corruption` (see [Visual perturbations](#visual-perturbations)),
+which the stock `-v1` ids do not.
 
 ```python
 import custom_maniskill_tasks  # noqa: F401  -- registers the ids
@@ -58,24 +59,105 @@ ids. `tools/ppo_stages_fast.py` (which collects the datasets) and `tools/replay_
 should needs the same import. Datasets recorded so far name the stock `-v1` ids and replay
 unchanged.
 
-## Distractors
+## Visual perturbations
 
-`LiftPegUpright-v1.1` also takes `distractors=True`, which adds four objects borrowed from the
-other tasks to the sides of the table: PickCube's red cube, PushCube's blue cube, PlaceSphere's
-blue sphere and a red sphere of the same size. They sit at `x = ±0.1`, `y = ±0.22`, which is clear of
-the peg's whole spawn area, and each side of the table gets one of each colour. The peg is red and
-blue too, so neither colour nor side is enough to pick it out.
+Five independent kwargs change how the scene looks, for evaluating a policy on a domain it was not
+trained on. Each defaults to "none", which is the scene every dataset here was recorded in, and any
+combination can be asked for:
+
+| kwarg | what it changes | e.g. |
+| --- | --- | --- |
+| `lighting` | the lights, the table's colour, and the objects' hue: see [Lighting](#lighting) | `"very-dim+warm"`, `"object-hue-30"` |
+| `texture` | patterns on the table and objects: see [Texture](#texture) | `"table-checker+object-stripes"` |
+| `distractors` | how many YCB objects are scattered on the table: see [Distractors](#distractors) | `3` |
+| `viewpoint` | where the wrist camera is and how wide it sees: see [Viewpoint](#viewpoint) | `"back-3+pitch-up-5"`, `"fov-90"` |
+| `corruption` | the camera images: blur, noise, low resolution: see [Corruption](#corruption) | `"blur-2+noise-0.05"` |
 
 ```python
-env = make_env("LiftPegUpright-v1.1", camera_view="wrist", distractors=True)
+env = make_env("PickCube-v1.1", camera_view="wrist",
+               lighting="dim", texture="table-checker", distractors=3,
+               viewpoint="back-2", corruption="blur-1")
 ```
 
-The flag is off by default, so a bare `gym.make` still builds the scene every dataset was recorded
-in. The objects are dynamic, so the robot can knock them, and they go back to the same poses on every reset.
-They draw nothing from the RNG and nothing reads them. Observations (including `state`),
-reward and success are unchanged; `tests/test_tasks.py` checks this. Like `lighting`, the flag is
-an env kwarg, so a trajectory recorded with it replays with it. In TSD, set
-`task.cfg.distractors=true`.
+Like every kwarg the tasks take, all five reach the env itself, so `gym.make` records them in
+`env.spec.kwargs`, `RecordEpisode` writes them into the trajectory json, and a replay rebuilds the
+same scene without being told. A default one is not passed at all, so existing recordings' metadata
+is unchanged. Asking for any on a stock `-v1` id raises rather than silently doing nothing, as does
+an unknown keyword. Keywords stack with `+` (except `distractors`, which is a count).
+
+`perturbation_sheet.py` renders any combination side by side, wrist camera and third-person view,
+for looking at them:
+
+```
+python perturbation_sheet.py --task PickCube-v1.1 default corruption=blur-2 \
+    "texture=table-checker,distractors=3" "lighting=dim,viewpoint=back-4+pitch-up-6"
+```
+
+### Texture
+
+`texture` is `<target>-<pattern>` or `<target>-<pattern>-<n>`, stacked with `+`. Targets: `table`,
+`object` (the task's object of interest: the cube, sphere or peg), `distractors`, or any actor's
+name (`cube`, `sphere`, `peg`, `bin`, `goal_region`, ...). Patterns: `checker`, `stripes`, `dots`,
+`noise`; `n` is how many times it repeats across the texture (a default per pattern). A more specific
+target wins whatever order they are named in, so `"object-checker+cube-dots"` dots the cube and
+checks anything else `object` means. An unknown target lists the actors there are, and `object` on
+PokeCube (a cube *and* a peg) asks you to name one.
+
+The table is replaced by the pattern in a light and a dark tone. Objects keep their colour and gain
+the pattern as a darkening of it (a red cube under `checker` is red and dark red), so what differs is
+texture alone, not colour.
+
+### Viewpoint
+
+Moves the wrist camera (`camera_view="wrist"`) from where the robot mounts it. Keywords, each with a
+non-negative number, stacked with `+` (there are no signs, since `+` joins keywords):
+
+| keyword | meaning |
+| --- | --- |
+| `left`, `right`, `up`, `down` `-<cm>` | move the camera across its image plane |
+| `forward`, `back` `-<cm>` | move it along its optical axis, which points at the table |
+| `pitch-up`, `pitch-down` `-<deg>` | turn it so the view tilts up / down |
+| `yaw-left`, `yaw-right` `-<deg>` | turn it so the view swings left / right |
+| `roll-left`, `roll-right` `-<deg>` | roll it, left / right side down |
+| `fov-<deg>` | set the field of view outright (the default is 108) |
+
+The same axis twice adds up (`left-2+right-2` is no shift). It acts through the camera's
+`sensor_configs`, and `make_env` checks the built camera is where it was asked to be. A large `back`
+puts the camera behind its own hand mount, which then fills the lower half of the image.
+
+### Corruption
+
+Degrades the images the env returns, on every camera, leaving `env.render()` alone. `blur-<sigma>`
+(Gaussian, in pixels), `noise-<std>` (additive, as a fraction of full scale: 0.05 is about 13 grey
+levels) and `lowres-<factor>` (shrink by that factor, blow back up), stacked with `+` and always
+applied in that order. Images keep their shape and dtype, so `lowres` renders at full resolution
+and degrades afterwards. The noise is seeded by the reset seed, so an episode is reproducible.
+
+## Distractors
+
+`distractors=N` scatters N YCB objects on the table, `N` from 0 to 8, on any `-v1.1` task. They are
+the first N of a fixed pool of compact household objects (a soup can, an apple, a pudding box, a
+potted meat can, a Rubik's cube, a mug, an orange, a mustard bottle), so the scene is the same
+objects every time and only their places and yaws change. Needs the YCB assets:
+`python -m mani_skill.utils.download_asset ycb`.
+
+Each lands at a random place wholly inside the wrist camera's view (at the shifted pose if there is
+a `viewpoint`) and clear, by 4 cm, of the task's own objects, of the ground the task needs (the
+strip PushCube pushes its cube along, PlaceSphere's bin) and of each other. The places come from
+the episode RNG, so a given reset seed gives the same scene, and they are drawn after the task's
+own, so the task's spawn is unchanged. Up to about 3 always fit; with more, a crowded draw (most
+often PushCube, whose path takes room) falls back to the roomiest place, which can touch a
+neighbour and be pushed apart by the physics.
+
+```python
+env = make_env("LiftPegUpright-v1.1", camera_view="wrist", distractors=3)
+```
+
+They are off by default, so a bare `gym.make` still builds the scene every dataset was recorded in.
+The objects are dynamic, so the robot can knock them, and they are put back on every reset. Nothing
+reads them: observations (including `state`), reward and success are unchanged, which
+`tests/test_tasks.py` checks. `distractors` used to be a flag for copies of the task's own object;
+`distractors=True` now raises. In TSD, set `task.cfg.distractors=3` (a count).
 
 ## Usage
 
@@ -88,6 +170,8 @@ env = make_env(
     control_mode="pd_ee_delta_pos",
     camera_view="wrist",     # "default" | "focused" | "wrist"
     lighting="default",      # "default" | "dim" | "bright" | "warm" | "cool" | "side" | "random"
+    distractors=0,           # 0 to 8 YCB objects scattered in the wrist view
+    texture="default", viewpoint="default", corruption="default",
     camera_resolution=224,
     frame_skip=3,            # one step takes 3 concatenated actions
     n_frames=2,              # observations are the last 2 (macro) frames, stacked
@@ -143,12 +227,9 @@ Two caveats inherited from ManiSkill:
 
 ## Lighting
 
-`lighting` picks the condition the scene is rendered under, for evaluating a policy on a domain it
-was not trained on. Unlike `camera_view` it is an ordinary env kwarg on the `-v1.1` ids
-(`LightingMixin`), so `gym.make` records it in `env.spec.kwargs`, `RecordEpisode` writes it into the
-trajectory json, and a replay of that dataset rebuilds the same condition without being told —
-a shifted recording is distinguishable from a default-lit one on disk. Asking for a shift on a
-stock `-v1` id raises rather than silently doing nothing.
+`lighting` picks the condition the scene is rendered under. Unlike `camera_view` it is an ordinary
+env kwarg on the `-v1.1` ids (`LightingMixin`), so a shifted recording is distinguishable from a
+default-lit one on disk (see [Visual perturbations](#visual-perturbations)).
 
 | preset | what it is |
 | --- | --- |
@@ -209,6 +290,7 @@ No pytest in the project environment, so the files run standalone:
 ```bash
 python tests/test_wrappers.py   # wrapper semantics against a fake env, no simulator
 python tests/test_tasks.py      # the -v1.1 ids: registration, and what they do/don't change
+python tests/test_perturbations.py   # corruption, viewpoint and texture
 python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_skip equivalence
 python tests/test_lighting.py   # presets: default parity, that each shift shows, per-env draws
 ```

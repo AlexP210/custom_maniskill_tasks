@@ -12,26 +12,22 @@ Registered by importing `custom_maniskill_tasks`. Note that other processes have
 a tool that only does `import mani_skill.envs` (`tools/replay_trajectory.py`,
 `tools/ppo_stages_fast.py`) will not find these ids.
 
-These ids also take a `lighting` kwarg (`LightingMixin`, see `lighting`) naming the condition the
-scene is rendered under. It defaults to the stock lighting, so it changes nothing unless asked;
-being an ordinary env kwarg rather than something applied around `gym.make`, it is recorded into
-any trajectory collected under it and replays from that metadata on its own.
+These ids also take kwargs that change how the scene looks, each defaulting to the stock scene so
+that it changes nothing unless asked: `lighting` (`LightingMixin`, see `lighting`) for the lighting
+and colour condition, and (`PerturbationsMixin`, see `perturbations`) `texture` for patterns on the
+table and objects, `distractors` for YCB objects scattered on the table, `viewpoint` for a moved
+or zoomed wrist camera, and `corruption` for blurred, noisy or low-resolution images. Being
+ordinary env kwargs rather than something applied around `gym.make`, they are recorded into any
+trajectory collected under them and replay from that metadata on its own.
 
 Everything else is the stock task: same scene, reward, success predicate and 50-step horizon, and
 the same `normalized_dense` default reward mode. The one baked-in default is
 `control_mode="pd_ee_delta_pos"`, which every recording in this project used; it is a registration
 default, so an explicit `gym.make(..., control_mode=...)` still wins.
-
-`LiftPegUpright-v1.1` alone also takes `distractors=True`, which adds four objects borrowed from the
-other tasks (red and blue cubes and spheres) off to the sides of the table; see `DistractorsMixin`.
-Off by default, so the stock scene is still what a bare `gym.make` builds.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import sapien
 import torch
 
 from mani_skill.envs.tasks.tabletop.lift_peg_upright import LiftPegUprightEnv
@@ -40,11 +36,10 @@ from mani_skill.envs.tasks.tabletop.pick_single_ycb import PickSingleYCBEnv
 from mani_skill.envs.tasks.tabletop.place_sphere import PlaceSphereEnv
 from mani_skill.envs.tasks.tabletop.poke_cube import PokeCubeEnv
 from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
-from mani_skill.utils.building import actors
 from mani_skill.utils.registration import REGISTERED_ENVS, register_env
-from mani_skill.utils.structs.pose import Pose
 
 from custom_maniskill_tasks.lighting import LightingMixin
+from custom_maniskill_tasks.perturbations import PerturbationsMixin
 
 CONTROL_MODE = "pd_ee_delta_pos"
 
@@ -75,88 +70,6 @@ def _asset_download_ids(base_task: str) -> list[str]:
     return REGISTERED_ENVS[base_task].asset_download_ids
 
 
-PUSH_CUBE_BLUE = (12 / 255, 42 / 255, 160 / 255, 1.0)
-"""PushCube's cube and PlaceSphere's sphere -- also the blue half of LiftPegUpright's peg."""
-PICK_CUBE_RED = (1.0, 0.0, 0.0, 1.0)
-"""PickCube's cube."""
-
-
-@dataclass(frozen=True)
-class Distractor:
-    """One task-irrelevant object: the other tasks' own assets, parked off to the side."""
-
-    name: str
-    shape: str  # "cube" (half_size) or "sphere" (radius)
-    size: float
-    color: tuple[float, float, float, float]
-    xy: tuple[float, float]
-
-
-DISTRACTORS = (
-    # PickCube's red cube and PushCube's blue one, PlaceSphere's blue sphere and a red one of the
-    # same size. At |y| = 0.22 they clear the peg's whole spawn footprint (|y| <= 0.125 lying
-    # down: 0.1 of spawn jitter plus its 0.025 half width) with room for an open gripper, and sit
-    # inside the wrist camera's view from the rest pose. Each colour appears on both sides, so
-    # "the red/blue thing" never picks out the peg by position alone.
-    Distractor("distractor_red_cube", "cube", 0.02, PICK_CUBE_RED, (0.1, 0.22)),
-    Distractor("distractor_blue_sphere", "sphere", 0.02, PUSH_CUBE_BLUE, (-0.1, 0.22)),
-    Distractor("distractor_blue_cube", "cube", 0.02, PUSH_CUBE_BLUE, (0.1, -0.22)),
-    Distractor("distractor_red_sphere", "sphere", 0.02, PICK_CUBE_RED, (-0.1, -0.22)),
-)
-
-
-class DistractorsMixin:
-    """Gives a task a `distractors` kwarg: when true, `DISTRACTORS` are added to its scene.
-
-    Off by default, so the scene every existing dataset and checkpoint was made in is unchanged.
-    Like `lighting` it is an ordinary env kwarg, so it lands in `env.spec.kwargs` and any trajectory
-    json recorded under it, and a replay rebuilds the same scene.
-
-    The objects are dynamic -- the robot can knock them -- but nothing reads them: observations,
-    reward and success are the task's own. A state observation is unchanged too, since tasks put
-    only their own objects into `_get_obs_extra`. They are reset to the same poses each episode
-    and draw nothing from the rng, so the task's own reset distribution is untouched.
-
-    Mixed in after `LightingMixin`, so they are built inside its `super()._load_scene` and count
-    as task objects to an `object_hue` shift, exactly as the peg does.
-    """
-
-    def __init__(self, *args, distractors: bool = False, **kwargs):
-        self._distractors = DISTRACTORS if distractors else ()
-        super().__init__(*args, **kwargs)
-
-    @property
-    def distractors(self) -> dict:
-        """The distractor actors in this scene, by name; empty when built without them."""
-        return self._distractor_actors
-
-    def _load_scene(self, options: dict):
-        super()._load_scene(options)
-        self._distractor_actors = {}
-        for d in self._distractors:
-            build = actors.build_cube if d.shape == "cube" else actors.build_sphere
-            size_kwarg = {"half_size": d.size} if d.shape == "cube" else {"radius": d.size}
-            self._distractor_actors[d.name] = build(
-                self.scene,
-                **size_kwarg,
-                color=list(d.color),
-                name=d.name,
-                body_type="dynamic",
-                initial_pose=sapien.Pose(p=[*d.xy, d.size]),
-            )
-
-    def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
-        super()._initialize_episode(env_idx, options)
-        by_name = {d.name: d for d in self._distractors}
-        for name, actor in self._distractor_actors.items():
-            d = by_name[name]
-            p = torch.tensor([*d.xy, d.size], device=self.device).expand(len(env_idx), 3)
-            actor.set_pose(Pose.create_from_pq(p=p))
-            # a knocked sphere would otherwise still be rolling after the reset
-            actor.set_linear_velocity(torch.zeros_like(p))
-            actor.set_angular_velocity(torch.zeros_like(p))
-
-
 class FullHorizonMixin:
     """Never terminate: every episode runs to its time limit.
 
@@ -178,15 +91,26 @@ class FullHorizonMixin:
 @register_env(
     "PushCube-v1.1", max_episode_steps=_horizon("PushCube-v1"), control_mode=CONTROL_MODE
 )
-class PushCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PushCubeEnv):
-    """PushCube-v1 with no early termination and a `lighting` kwarg."""
+class PushCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin, PushCubeEnv):
+    """PushCube-v1 with no early termination and the appearance kwargs above."""
+
+    object_of_interest = "obj"
+    distractor_avoid = (
+        ("obj", (0.0, 0.0), (0.03, 0.03)),
+        ("obj", (0.12, 0.0), (0.12, 0.05)),  # the cube's way to its goal
+    )
 
 
 @register_env(
     "PlaceSphere-v1.1", max_episode_steps=_horizon("PlaceSphere-v1"), control_mode=CONTROL_MODE
 )
-class PlaceSphereFullHorizonEnv(FullHorizonMixin, LightingMixin, PlaceSphereEnv):
-    """PlaceSphere-v1 with no early termination and a `lighting` kwarg."""
+class PlaceSphereFullHorizonEnv(
+    FullHorizonMixin, LightingMixin, PerturbationsMixin, PlaceSphereEnv
+):
+    """PlaceSphere-v1 with no early termination and the appearance kwargs above."""
+
+    object_of_interest = "obj"
+    distractor_avoid = (("obj", (0.0, 0.0), (0.03, 0.03)), ("bin", (0.0, 0.0), (0.06, 0.06)))
 
 
 @register_env(
@@ -195,24 +119,34 @@ class PlaceSphereFullHorizonEnv(FullHorizonMixin, LightingMixin, PlaceSphereEnv)
     control_mode=CONTROL_MODE,
 )
 class LiftPegUprightFullHorizonEnv(
-    FullHorizonMixin, LightingMixin, DistractorsMixin, LiftPegUprightEnv
+    FullHorizonMixin, LightingMixin, PerturbationsMixin, LiftPegUprightEnv
 ):
-    """LiftPegUpright-v1 with no early termination, a `lighting` kwarg and a `distractors` one
-    (`gym.make("LiftPegUpright-v1.1", distractors=True)`; see `DistractorsMixin`)."""
+    """LiftPegUpright-v1 with no early termination and the appearance kwargs above."""
+
+    object_of_interest = "peg"
+    distractor_avoid = (("peg", (0.0, 0.0), (0.12, 0.03)),)
 
 
 @register_env(
     "PokeCube-v1.1", max_episode_steps=_horizon("PokeCube-v1"), control_mode=CONTROL_MODE
 )
-class PokeCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PokeCubeEnv):
-    """PokeCube-v1 with no early termination and a `lighting` kwarg."""
+class PokeCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin, PokeCubeEnv):
+    """PokeCube-v1 with no early termination and the appearance kwargs above.
+
+    Has no single object of interest (a cube and the peg that pokes it), so `texture` has no
+    `object` here: name `cube` or `peg`."""
+
+    distractor_avoid = (("cube", (0.0, 0.0), (0.03, 0.03)), ("peg", (0.0, 0.0), (0.12, 0.03)))
 
 
 @register_env(
     "PickCube-v1.1", max_episode_steps=_horizon("PickCube-v1"), control_mode=CONTROL_MODE
 )
-class PickCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PickCubeEnv):
-    """PickCube-v1 with no early termination and a `lighting` kwarg."""
+class PickCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin, PickCubeEnv):
+    """PickCube-v1 with no early termination and the appearance kwargs above."""
+
+    object_of_interest = "cube"
+    distractor_avoid = (("cube", (0.0, 0.0), (0.03, 0.03)),)
 
 
 @register_env(
@@ -221,11 +155,16 @@ class PickCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PickCubeEnv):
     asset_download_ids=_asset_download_ids("PickSingleYCB-v1"),
     control_mode=CONTROL_MODE,
 )
-class PickSingleYCBFullHorizonEnv(FullHorizonMixin, LightingMixin, PickSingleYCBEnv):
-    """PickSingleYCB-v1 with no early termination and a `lighting` kwarg.
+class PickSingleYCBFullHorizonEnv(
+    FullHorizonMixin, LightingMixin, PerturbationsMixin, PickSingleYCBEnv
+):
+    """PickSingleYCB-v1 with no early termination and the appearance kwargs above.
 
     The only one of these variants whose scene is not fixed: which YCB object is in it is drawn
     per parallel env at reconfiguration, so the stock task defaults `reconfiguration_freq` to 1 at
     `num_envs=1` (a new object every reset) and to 0 above it (one draw, held for the run). That
     default is the task's own and is untouched here.
     """
+
+    object_of_interest = "obj"
+    distractor_avoid = (("obj", (0.0, 0.0), (0.07, 0.07)),)

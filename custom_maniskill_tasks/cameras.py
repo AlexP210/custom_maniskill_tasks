@@ -76,6 +76,13 @@ def canonical_camera_view(camera_view: str) -> str:
     return view
 
 
+WRIST_CAMERA_LOCAL_POSE = sapien.Pose(
+    p=[0.035, 0, 0.036], q=euler2quat(0, -1.5707, 3.1415)
+) * sapien.Pose(p=[0, 0.02, 0.0115])
+"""Where the wrist camera sits in the frame of `panda_hand` (x forward, y left, z up in the camera's
+own frame, as sapien has it). Both `PandaHandCam` and `panda_wristcam` mount it here."""
+
+
 class PandaHandCam(Panda):
     """The stock Panda with the wrist realsense that ManiSkill only ships on `panda_wristcam`.
 
@@ -97,9 +104,7 @@ class PandaHandCam(Panda):
     def _sensor_configs(self):
         # panda_v3 hangs the camera off panda_hand through two fixed joints; panda_v2 has the
         # same panda_hand, so composing the two puts the camera in exactly the same place
-        pose = sapien.Pose(
-            p=[0.035, 0, 0.036], q=euler2quat(0, -1.5707, 3.1415)
-        ) * sapien.Pose(p=[0, 0.02, 0.0115])
+        pose = WRIST_CAMERA_LOCAL_POSE
         return [
             CameraConfig(
                 uid=WRIST_CAMERA_UID,
