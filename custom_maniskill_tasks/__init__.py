@@ -60,6 +60,12 @@ from custom_maniskill_tasks.corruption import (
     corrupt_images,
 )
 from custom_maniskill_tasks.perturbations import PerturbationsMixin
+from custom_maniskill_tasks.table_material import (
+    DEFAULT_TABLE_MATERIAL,
+    MATERIALS,
+    TableMaterialMixin,
+    canonical_table_material,
+)
 from custom_maniskill_tasks.texture import (
     DEFAULT_TEXTURE,
     PATTERNS,
@@ -108,20 +114,24 @@ __all__ = [
     "DOMAIN_RANDOMIZATION_PRESETS",
     "DirectionalLight",
     "DEFAULT_CORRUPTION",
+    "DEFAULT_TABLE_MATERIAL",
     "DEFAULT_TEXTURE",
     "DEFAULT_VIEWPOINT",
     "MAX_DISTRACTORS",
+    "MATERIALS",
     "PATTERNS",
     "YCB_POOL",
     "CorruptionConfig",
     "CorruptionMixin",
     "DistractorsMixin",
     "PerturbationsMixin",
+    "TableMaterialMixin",
     "TextureMixin",
     "ViewpointConfig",
     "ViewpointMixin",
     "canonical_corruption",
     "canonical_distractors",
+    "canonical_table_material",
     "canonical_texture",
     "canonical_viewpoint",
     "check_viewpoint",

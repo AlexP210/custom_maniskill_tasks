@@ -30,6 +30,11 @@ from custom_maniskill_tasks.corruption import (
     supports_corruption,
 )
 from custom_maniskill_tasks.distractors import canonical_distractors, supports_distractors
+from custom_maniskill_tasks.table_material import (
+    DEFAULT_TABLE_MATERIAL,
+    canonical_table_material,
+    supports_table_material,
+)
 from custom_maniskill_tasks.texture import DEFAULT_TEXTURE, canonical_texture, supports_texture
 from custom_maniskill_tasks.viewpoint import (
     DEFAULT_VIEWPOINT,
@@ -69,6 +74,7 @@ def make_env(
     camera_view: str = "default",
     lighting: str | Sequence[str] | dict = DEFAULT_LIGHTING_PRESET,
     texture: str | Sequence[str] = DEFAULT_TEXTURE,
+    table_material: str = DEFAULT_TABLE_MATERIAL,
     distractors: int = 0,
     viewpoint: str | Sequence[str] = DEFAULT_VIEWPOINT,
     corruption: str | Sequence[str] = DEFAULT_CORRUPTION,
@@ -140,6 +146,9 @@ def make_env(
             "cube-dots"): a target of `table`, `object` (the task's object of interest),
             `distractors` or an actor's name, and a pattern of `checker`, `stripes`, `dots` or
             `noise`. See `texture`.
+        table_material: the table's look -- "default" (wood), "marble", "glass", "metal",
+            "gold", "concrete" or "rubber". Visual only: friction and contact are unchanged. See
+            `table_material`.
         distractors: how many YCB objects (0 to 8) to scatter on the table, wholly inside the wrist
             camera's view and clear of the task's own objects. Needs the YCB assets. See
             `distractors`.
@@ -152,7 +161,7 @@ def make_env(
             more of `blur-<sigma>`, `noise-<std>` and `lowres-<factor>` joined with "+" (e.g.
             "blur-2+noise-0.05"). See `corruption`.
 
-        Each of `lighting`, `texture`, `distractors`, `viewpoint` and `corruption` is a real env
+        Each of `lighting`, `texture`, `table_material`, `distractors`, `viewpoint` and `corruption` is a real env
         kwarg of the project's own `-v1.1` ids, independent of the others, so a non-default one is
         recorded into any trajectory collected through it; a default one is not passed at all,
         leaving existing configs' recorded metadata byte-identical to what they produced before
@@ -192,6 +201,7 @@ def make_env(
     view = canonical_camera_view(camera_view)
     lighting_config = canonical_lighting(lighting)
     texture_spec = canonical_texture(texture)
+    table_material = canonical_table_material(table_material)
     distractor_count = canonical_distractors(distractors)
     viewpoint_config = canonical_viewpoint(viewpoint)
     corruption_config = canonical_corruption(corruption)
@@ -219,6 +229,8 @@ def make_env(
         )
     for name, value, asked, supported in (
         ("texture", texture, bool(texture_spec), supports_texture),
+        ("table_material", table_material, table_material != DEFAULT_TABLE_MATERIAL,
+         supports_table_material),
         ("distractors", distractors, distractor_count > 0, supports_distractors),
         ("viewpoint", viewpoint, not viewpoint_config.is_default, supports_viewpoint),
         ("corruption", corruption, not corruption_config.is_default, supports_corruption),

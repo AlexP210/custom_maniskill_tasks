@@ -61,7 +61,7 @@ unchanged.
 
 ## Visual perturbations
 
-Five independent kwargs change how the scene looks, for evaluating a policy on a domain it was not
+Six independent kwargs change how the scene looks, for evaluating a policy on a domain it was not
 trained on. Each defaults to "none", which is the scene every dataset here was recorded in, and any
 combination can be asked for:
 
@@ -69,6 +69,7 @@ combination can be asked for:
 | --- | --- | --- |
 | `lighting` | the lights, the table's colour, and the objects' hue: see [Lighting](#lighting) | `"very-dim+warm"`, `"object-hue-30"` |
 | `texture` | patterns on the table and objects: see [Texture](#texture) | `"table-checker+object-stripes"` |
+| `table_material` | the table's material, visual only: see [Table material](#table-material) | `"marble"`, `"metal"` |
 | `distractors` | how many YCB objects are scattered on the table: see [Distractors](#distractors) | `3` |
 | `viewpoint` | where the wrist camera is and how wide it sees: see [Viewpoint](#viewpoint) | `"back-3+pitch-up-5"`, `"fov-90"` |
 | `corruption` | the camera images: blur, noise, low resolution: see [Corruption](#corruption) | `"blur-2+noise-0.05"` |
@@ -79,7 +80,7 @@ env = make_env("PickCube-v1.1", camera_view="wrist",
                viewpoint="back-2", corruption="blur-1")
 ```
 
-Like every kwarg the tasks take, all five reach the env itself, so `gym.make` records them in
+Like every kwarg the tasks take, all six reach the env itself, so `gym.make` records them in
 `env.spec.kwargs`, `RecordEpisode` writes them into the trajectory json, and a replay rebuilds the
 same scene without being told. A default one is not passed at all, so existing recordings' metadata
 is unchanged. Asking for any on a stock `-v1` id raises rather than silently doing nothing, as does
@@ -106,6 +107,15 @@ PokeCube (a cube *and* a peg) asks you to name one.
 The table is replaced by the pattern in a light and a dark tone. Objects keep their colour and gain
 the pattern as a darkening of it (a red cube under `checker` is red and dark red), so what differs is
 texture alone, not colour.
+
+### Table material
+
+`table_material` is `"default"` (the wood), `"marble"`, `"glass"`, `"metal"` (brushed steel), `"gold"`,
+`"concrete"` or `"rubber"`. It edits only the table's render material (colour, roughness, metallic,
+specular, transmission); the collision box and its friction are separate and untouched, so contact
+behaviour is identical under every material. `"glass"` is a pale, glossy look, not a true
+see-through table. It stacks with `texture` (the pattern replaces the colour, the material's shine
+stays) and `lighting`'s table tint. Materials are defined in `table_material.MATERIALS`.
 
 ### Viewpoint
 

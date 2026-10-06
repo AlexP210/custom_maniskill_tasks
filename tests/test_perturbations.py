@@ -13,6 +13,7 @@ import torch
 from custom_maniskill_tasks import (
     CorruptionConfig,
     canonical_corruption,
+    canonical_table_material,
     canonical_texture,
     canonical_viewpoint,
     corrupt_images,
@@ -114,6 +115,33 @@ def test_viewpoint_moves_the_wrist_camera_and_is_recorded():
     _raises(ValueError, make_env, TASK, num_envs=1, sim_backend="physx_cpu", viewpoint="left-4")  # not wrist
 
 
+# ---- table_material ------------------------------------------------------------------------
+
+def test_table_material_changes_the_table_only_visually():
+    assert canonical_table_material(None) == "default"
+    _raises(ValueError, canonical_table_material, "banana")
+    clean, clean_kwargs = _hand_frame()
+    assert "table_material" not in clean_kwargs
+    for material in ("marble", "glass", "metal"):
+        frame, kwargs = _hand_frame(table_material=material)
+        assert kwargs["table_material"] == material and not np.array_equal(frame, clean), material
+    _raises(ValueError, _hand_frame, table_material="banana")
+
+
+def test_table_material_leaves_contact_alone():
+    def friction(**kwargs):
+        env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", **kwargs)
+        env.reset(seed=7)
+        shapes = env.unwrapped.table_scene.table._objs[0].find_component_by_type(
+            __import__("sapien").physx.PhysxRigidBaseComponent
+        ).collision_shapes
+        out = [(m.static_friction, m.dynamic_friction, m.restitution)
+               for m in (s.physical_material for s in shapes)]
+        env.close()
+        return out
+    assert friction() == friction(table_material="glass")
+
+
 # ---- texture -------------------------------------------------------------------------------
 
 def test_texture_parses_and_rejects():
@@ -169,6 +197,8 @@ if __name__ == "__main__":
         test_corruption_reaches_the_observation_and_is_recorded,
         test_viewpoint_parses_and_rejects,
         test_viewpoint_moves_the_wrist_camera_and_is_recorded,
+        test_table_material_changes_the_table_only_visually,
+        test_table_material_leaves_contact_alone,
         test_texture_parses_and_rejects,
         test_texture_changes_the_target_and_only_the_target,
         test_a_named_actor_beats_its_class_and_bad_targets_raise,
