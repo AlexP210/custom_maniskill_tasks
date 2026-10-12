@@ -10,6 +10,7 @@ stack themselves (a dataset replay that needs `sensor_configs` for `RecordEpisod
 inserts its own observation adapter between `FrameSkip` and `FrameStack`).
 """
 
+from custom_maniskill_tasks.axes import AXES, NOT_GRADED, Axis, axis, conditions, graded_kwargs
 from custom_maniskill_tasks.backends import backend_kwargs, resolve_sim_backend
 from custom_maniskill_tasks.cameras import (
     CAMERA_VIEWS,
@@ -104,6 +105,12 @@ from custom_maniskill_tasks.wrappers import (
 )
 
 __all__ = [
+    "AXES",
+    "NOT_GRADED",
+    "Axis",
+    "axis",
+    "conditions",
+    "graded_kwargs",
     "CAMERA_VIEWS",
     "CONTROL_MODE",
     "DEFAULT_CAMERA_RESOLUTION",

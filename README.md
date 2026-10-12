@@ -94,6 +94,48 @@ python perturbation_sheet.py --task PickCube-v1.1 default corruption=blur-2 \
     "texture=table-checker,distractors=3" "lighting=dim,viewpoint=back-4+pitch-up-6"
 ```
 
+### Graded axes
+
+Some of these can be dialled up from "none" to "a lot", and a robustness sweep wants the knob, its
+neutral value and a grid to run. They are registered in `custom_maniskill_tasks/axes.py`, which
+sweep scripts take their conditions from (`conditions("corruption.blur")` gives
+`[(0, "blur-0"), (0.5, "blur-0.5"), ...]`, to pass straight to `make_env`). `tests/test_axes.py`
+fails if a parser keyword or mixin kwarg is on neither an axis nor the "no axis" list, if a grid
+value does not parse, or if an axis's neutral value is not the default scene. The table below is
+generated (`python -m custom_maniskill_tasks.axes`) and the test checks it is current. A negative
+value on a signed `viewpoint` axis is the opposite keyword (`-5` on `viewpoint.pitch` is
+`pitch-down-5`).
+
+<!-- axes:start -->
+| axis | kwarg | neutral | unit | default grid | notes |
+| --- | --- | --- | --- | --- | --- |
+| `lighting.brightness` | `lighting` | 1 | x default level | 0.25, 0.5, 1, 2.5, 4, 8 (log) | ambient 0.3k and both lights k |
+| `lighting.warm` | `lighting` | 0 | 0 = 6500 K, 1 = 2700 K | 0, 0.2, 0.4, 0.6, 0.8, 1 | constant luminance; the parser allows up to 1.6 |
+| `lighting.cool` | `lighting` | 0 | 0 = 6500 K, 1 = 12000 K | 0, 0.2, 0.4, 0.6, 0.8, 1 | constant luminance; the parser allows up to 1.6 |
+| `lighting.side` | `lighting` | 0 | 0 = default, 1 = side | 0, 0.2, 0.4, 0.6, 0.8, 1 | key light direction |
+| `lighting.table` | `lighting` | 1 | x table colour | 0.01, 0.408, 0.806, 1.204, 1.602, 2 | grey scale; the r-g-b form is not on the axis |
+| `lighting.object_hue` | `lighting` | 0 | degrees | 0, 12, 24, 36, 48, 60 | cyclic; 0 and 360 are the same; 180 is the far end |
+| `corruption.blur` | `corruption` | 0 | px sigma | 0, 0.2, 0.4, 0.6, 0.8, 1 |  |
+| `corruption.noise` | `corruption` | 0 | std, fraction of full scale | 0, 0.1, 0.2, 0.3, 0.4, 0.5 | 0.05 is about 13 grey levels |
+| `corruption.lowres` | `corruption` | 1 | x downscale factor | 1, 2, 3, 4, 5, 6 (log) |  |
+| `viewpoint.lateral` | `viewpoint` | 0 | cm, + left | -6, -4.2, -2.4, -0.6, 1.2, 3 |  |
+| `viewpoint.vertical` | `viewpoint` | 0 | cm, + up | -1, 0.2, 1.4, 2.6, 3.8, 5 |  |
+| `viewpoint.depth` | `viewpoint` | 0 | cm, + forward | -3, -1.8, -0.6, 0.6, 1.8, 3 | large `back` shows the hand mount |
+| `viewpoint.pitch` | `viewpoint` | 0 | degrees, + up | -10, -4, 2, 8, 14, 20 |  |
+| `viewpoint.yaw` | `viewpoint` | 0 | degrees, + left | -20, -14, -8, -2, 4, 10 |  |
+| `viewpoint.roll` | `viewpoint` | 0 | degrees, + left side down | -15, -9, -3, 3, 9, 15 |  |
+| `viewpoint.fov` | `viewpoint` | 108 | degrees | 90, 97, 104, 111, 118, 125 | allowed 10 to 170 |
+| `distractors.count` | `distractors` | 0 | YCB objects | 0, 1, 2, 3 | count; up to about 3 always fit |
+
+No axis: `table_material` (categorical: seven named materials with no order between them); `texture` (categorical: pattern x target; the repeat count `n` changes spatial frequency only, and there is no value at which a pattern is no pattern); `lighting:named` (the named presets (`dim`, `side`, `shadows`...) are points, not scales; their graded relatives are the axes above).
+
+Ungraded conditions (`CATEGORIES`, run by `run_ungraded.py`):
+
+- `table_material` (`table_material`): `marble`, `glass`, `metal`, `gold`, `concrete`, `rubber`
+- `texture.table` (`texture`): `table-checker`, `table-stripes`, `table-dots`, `table-noise`
+- `texture.object` (`texture`): `object-checker`, `object-stripes`, `object-dots`, `object-noise`
+<!-- axes:end -->
+
 ### Texture
 
 `texture` is `<target>-<pattern>` or `<target>-<pattern>-<n>`, stacked with `+`. Targets: `table`,
@@ -301,6 +343,7 @@ No pytest in the project environment, so the files run standalone:
 python tests/test_wrappers.py   # wrapper semantics against a fake env, no simulator
 python tests/test_tasks.py      # the -v1.1 ids: registration, and what they do/don't change
 python tests/test_perturbations.py   # corruption, viewpoint and texture
+python tests/test_axes.py       # the graded-axis registry against the parsers, no simulator
 python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_skip equivalence
 python tests/test_lighting.py   # presets: default parity, that each shift shows, per-env draws
 ```
