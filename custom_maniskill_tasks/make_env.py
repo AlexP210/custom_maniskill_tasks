@@ -26,6 +26,7 @@ from custom_maniskill_tasks.lighting import (
 )
 from custom_maniskill_tasks.corruption import (
     DEFAULT_CORRUPTION,
+    DEFAULT_CORRUPTION_CONFIG,
     canonical_corruption,
     supports_corruption,
 )
@@ -38,10 +39,12 @@ from custom_maniskill_tasks.table_material import (
 from custom_maniskill_tasks.texture import DEFAULT_TEXTURE, canonical_texture, supports_texture
 from custom_maniskill_tasks.viewpoint import (
     DEFAULT_VIEWPOINT,
+    DEFAULT_VIEWPOINT_CONFIG,
     canonical_viewpoint,
     check_viewpoint,
     supports_viewpoint,
 )
+from custom_maniskill_tasks.randomize import is_randomize
 from custom_maniskill_tasks.wrappers import FrameSkip, FrameStack, IgnoreTerminations
 
 TASKS_IN_USE = (
@@ -166,6 +169,15 @@ def make_env(
         recorded into any trajectory collected through it; a default one is not passed at all,
         leaving existing configs' recorded metadata byte-identical to what they produced before
         these arguments existed.
+        Any of the six also takes `"randomize"` (e.g. `lighting="randomize"`): the env then draws its
+        condition afresh on every reset, uniformly from the runs `run_sweep.py` and
+        `run_ungraded.py` evaluate for that kwarg (the unperturbed scene, every non-neutral point
+        on its axes' grids, each of its named materials or patterns) -- see `randomize` and
+        `axes.randomization_pool`. The kwargs are independent, so randomizing several stacks one
+        draw from each. A randomized kwarg other than `corruption` rebuilds the scene on every reset
+        (`reconfiguration_freq=1`), and `viewpoint` needs `camera_view="wrist"`. `"randomize"`
+        itself is what is recorded as the env kwarg; `env.unwrapped.episode_perturbation` says what
+        the current episode drew.
         camera_view: which camera the observations come from -- "default" (the task's own camera,
             also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
             workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).
@@ -199,13 +211,20 @@ def make_env(
             builds, ...
     """
     view = canonical_camera_view(camera_view)
-    lighting_config = canonical_lighting(lighting)
-    texture_spec = canonical_texture(texture)
-    table_material = canonical_table_material(table_material)
-    distractor_count = canonical_distractors(distractors)
-    viewpoint_config = canonical_viewpoint(viewpoint)
-    corruption_config = canonical_corruption(corruption)
-    if not viewpoint_config.is_default and view != "wrist":
+    randomized = {
+        name for name, value in (
+            ("lighting", lighting), ("texture", texture), ("table_material", table_material),
+            ("distractors", distractors), ("viewpoint", viewpoint), ("corruption", corruption),
+        ) if is_randomize(value)
+    }
+    # a randomized kwarg is drawn by the env on every reset, so here it stands for its default
+    lighting_config = DEFAULT_LIGHTING if "lighting" in randomized else canonical_lighting(lighting)
+    texture_spec = () if "texture" in randomized else canonical_texture(texture)
+    table_material_name = DEFAULT_TABLE_MATERIAL if "table_material" in randomized else canonical_table_material(table_material)
+    distractor_count = 0 if "distractors" in randomized else canonical_distractors(distractors)
+    viewpoint_config = DEFAULT_VIEWPOINT_CONFIG if "viewpoint" in randomized else canonical_viewpoint(viewpoint)
+    corruption_config = DEFAULT_CORRUPTION_CONFIG if "corruption" in randomized else canonical_corruption(corruption)
+    if (not viewpoint_config.is_default or "viewpoint" in randomized) and view != "wrist":
         raise ValueError(f"viewpoint={viewpoint!r} moves the wrist camera, but camera_view={camera_view!r}.")
 
     sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid)
@@ -214,7 +233,7 @@ def make_env(
     if control_mode is not None:
         env_kwargs["control_mode"] = control_mode
 
-    if lighting_config != DEFAULT_LIGHTING:
+    if lighting_config != DEFAULT_LIGHTING or "lighting" in randomized:
         if not supports_lighting(task_name):
             raise ValueError(
                 f"lighting={lighting!r} was asked for, but {task_name} is not one of this "
@@ -229,13 +248,13 @@ def make_env(
         )
     for name, value, asked, supported in (
         ("texture", texture, bool(texture_spec), supports_texture),
-        ("table_material", table_material, table_material != DEFAULT_TABLE_MATERIAL,
+        ("table_material", table_material, table_material_name != DEFAULT_TABLE_MATERIAL,
          supports_table_material),
         ("distractors", distractors, distractor_count > 0, supports_distractors),
         ("viewpoint", viewpoint, not viewpoint_config.is_default, supports_viewpoint),
         ("corruption", corruption, not corruption_config.is_default, supports_corruption),
     ):
-        if not asked:
+        if not (asked or name in randomized):
             continue
         if not supported(task_name):
             raise ValueError(
@@ -260,8 +279,9 @@ def make_env(
             **env_kwargs,
         )
     check_camera_view(env, view, focused_camera_uid)
-    check_lighting(env, lighting_config)
-    check_viewpoint(env, viewpoint_config)
+    # a randomized kwarg is checked against what the env drew for its first episode
+    check_lighting(env, env.unwrapped.lighting if "lighting" in randomized else lighting_config)
+    check_viewpoint(env, env.unwrapped.viewpoint if "viewpoint" in randomized else viewpoint_config)
 
     if ignore_terminations:
         env = IgnoreTerminations(env)

@@ -132,6 +132,10 @@ class CorruptionMixin:
         """The corruption this env was built with; `DEFAULT_CORRUPTION_CONFIG` unless asked."""
         return self._corruption
 
+    def _set_corruption(self, condition) -> None:
+        """Take `condition` as this env's corruption from the next observation (`randomize`)."""
+        self._corruption = canonical_corruption(condition)
+
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         super()._initialize_episode(env_idx, options)
         if not self._corruption.is_default:

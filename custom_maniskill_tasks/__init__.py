@@ -10,7 +10,17 @@ stack themselves (a dataset replay that needs `sensor_configs` for `RecordEpisod
 inserts its own observation adapter between `FrameSkip` and `FrameStack`).
 """
 
-from custom_maniskill_tasks.axes import AXES, NOT_GRADED, Axis, axis, conditions, graded_kwargs
+from custom_maniskill_tasks.axes import (
+    AXES,
+    NOT_GRADED,
+    RANDOMIZE,
+    Axis,
+    axis,
+    conditions,
+    draw_condition,
+    graded_kwargs,
+    randomization_pool,
+)
 from custom_maniskill_tasks.backends import backend_kwargs, resolve_sim_backend
 from custom_maniskill_tasks.cameras import (
     CAMERA_VIEWS,
@@ -61,6 +71,7 @@ from custom_maniskill_tasks.corruption import (
     corrupt_images,
 )
 from custom_maniskill_tasks.perturbations import PerturbationsMixin
+from custom_maniskill_tasks.randomize import RandomizationMixin, is_randomize
 from custom_maniskill_tasks.table_material import (
     DEFAULT_TABLE_MATERIAL,
     MATERIALS,
@@ -107,6 +118,11 @@ from custom_maniskill_tasks.wrappers import (
 __all__ = [
     "AXES",
     "NOT_GRADED",
+    "RANDOMIZE",
+    "RandomizationMixin",
+    "draw_condition",
+    "is_randomize",
+    "randomization_pool",
     "Axis",
     "axis",
     "conditions",

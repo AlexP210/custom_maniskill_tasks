@@ -13,11 +13,15 @@ import torch
 from custom_maniskill_tasks import (
     CorruptionConfig,
     canonical_corruption,
+    canonical_lighting,
     canonical_table_material,
     canonical_texture,
     canonical_viewpoint,
     corrupt_images,
+    check_lighting,
+    check_viewpoint,
     make_env,
+    randomization_pool,
 )
 
 TASK = "PushCube-v1.1"
@@ -190,6 +194,103 @@ def test_perturbations_stack_with_lighting_and_each_other():
     json.dumps(kwargs)
 
 
+# ---- randomize -----------------------------------------------------------------------------
+
+EVERY = ("lighting", "texture", "table_material", "distractors", "viewpoint", "corruption")
+
+
+def _applied(env, kwarg, condition):
+    """That `condition` is what the env is now built with."""
+    base = env.unwrapped
+    if kwarg == "lighting":
+        assert base.lighting == canonical_lighting(condition)
+        check_lighting(env, base.lighting)
+    elif kwarg == "texture":
+        assert base.texture == canonical_texture(condition)
+    elif kwarg == "table_material":
+        assert base.table_material == canonical_table_material(condition)
+    elif kwarg == "distractors":
+        assert len(base.distractors) == condition
+    elif kwarg == "viewpoint":
+        assert base.viewpoint == canonical_viewpoint(condition)
+        check_viewpoint(env, base.viewpoint)
+    else:
+        assert base.corruption == canonical_corruption(condition)
+
+
+def test_randomize_draws_every_kwarg_from_its_pool_on_each_reset_and_applies_it():
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", **dict.fromkeys(EVERY, "randomize"))
+    assert env.unwrapped.reconfiguration_freq == 1
+    assert {k: env.unwrapped.spec.kwargs[k] for k in EVERY} == dict.fromkeys(EVERY, "randomize")
+    json.dumps(env.unwrapped.spec.kwargs)
+    seen = {k: set() for k in EVERY}
+    for seed in range(10):
+        obs, _ = env.reset(seed=seed)
+        drawn = env.unwrapped.episode_perturbation
+        assert set(drawn) == set(EVERY)
+        for kwarg, condition in drawn.items():
+            assert condition in randomization_pool(kwarg), (kwarg, condition)
+            _applied(env, kwarg, condition)
+            seen[kwarg].add(condition)
+        frame = np.asarray(obs["sensor_data"]["hand_camera"]["rgb"].cpu())
+        assert frame.dtype == np.uint8 and frame.shape[-1] == 3
+    assert all(len(v) > 1 for v in seen.values()), f"a kwarg never changed: {seen}"
+    env.close()
+
+
+def test_randomize_is_reproducible_from_the_reset_seed():
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", **dict.fromkeys(EVERY, "randomize"))
+    first, _ = env.reset(seed=4)
+    drawn = env.unwrapped.episode_perturbation
+    env.reset(seed=5)
+    second, _ = env.reset(seed=4)
+    assert env.unwrapped.episode_perturbation == drawn
+    a, b = (np.asarray(o["sensor_data"]["hand_camera"]["rgb"].cpu()) for o in (first, second))
+    assert np.array_equal(a, b)
+    env.close()
+
+
+def test_randomize_one_kwarg_leaves_the_others_alone():
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist",
+                   viewpoint="randomize", lighting="dim", corruption="blur-1")
+    for seed in range(6):
+        env.reset(seed=seed)
+        assert set(env.unwrapped.episode_perturbation) == {"viewpoint"}
+        _applied(env, "viewpoint", env.unwrapped.episode_perturbation["viewpoint"])
+        assert env.unwrapped.lighting == canonical_lighting("dim")
+        assert env.unwrapped.corruption == canonical_corruption("blur-1")
+    env.close()
+
+
+def test_randomized_corruption_alone_does_not_reconfigure():
+    env = make_env(TASK, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", corruption="randomize")
+    assert env.unwrapped.reconfiguration_freq == 0
+    drawn = set()
+    for seed in range(12):
+        _, info = env.reset(seed=seed)
+        assert not info["reconfigure"] or seed == 0
+        condition = env.unwrapped.episode_perturbation["corruption"]
+        _applied(env, "corruption", condition)
+        drawn.add(condition)
+    assert len(drawn) > 1
+    env.close()
+
+
+def test_randomize_is_refused_where_it_cannot_work():
+    kwargs = dict(num_envs=1, sim_backend="physx_cpu")
+    _raises(ValueError, make_env, TASK, viewpoint="randomize", **kwargs)  # not the wrist camera
+    _raises(ValueError, make_env, "PushCube-v1", lighting="randomize", **kwargs)  # a stock id
+    _raises(ValueError, make_env, TASK, camera_view="wrist", lighting="randomize", reconfiguration_freq=0, **kwargs)
+
+
+def test_randomized_textures_skip_object_patterns_where_there_is_no_object():
+    env = make_env(POKE, num_envs=1, sim_backend="physx_cpu", camera_view="wrist", texture="randomize")
+    for seed in range(20):
+        env.reset(seed=seed)
+        assert not env.unwrapped.episode_perturbation["texture"].startswith("object-")
+    env.close()
+
+
 if __name__ == "__main__":
     tests = [
         test_corruption_parses_and_rejects,
@@ -203,6 +304,12 @@ if __name__ == "__main__":
         test_texture_changes_the_target_and_only_the_target,
         test_a_named_actor_beats_its_class_and_bad_targets_raise,
         test_perturbations_stack_with_lighting_and_each_other,
+        test_randomize_draws_every_kwarg_from_its_pool_on_each_reset_and_applies_it,
+        test_randomize_is_reproducible_from_the_reset_seed,
+        test_randomize_one_kwarg_leaves_the_others_alone,
+        test_randomized_corruption_alone_does_not_reconfigure,
+        test_randomize_is_refused_where_it_cannot_work,
+        test_randomized_textures_skip_object_patterns_where_there_is_no_object,
     ]
     for test in tests:
         test()

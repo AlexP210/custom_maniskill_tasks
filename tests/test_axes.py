@@ -10,7 +10,10 @@ import numpy as np
 
 from custom_maniskill_tasks import LIGHTING_PRESETS, MATERIALS, PATTERNS, PerturbationsMixin, LightingMixin, corruption, lighting, viewpoint
 from custom_maniskill_tasks import axes as axes_module
-from custom_maniskill_tasks.axes import AXES, CATEGORIES, NOT_GRADED, PRESETS_LEFT_OUT, conditions, graded_kwargs, markdown_table, resolve
+from custom_maniskill_tasks.axes import (
+    AXES, CATEGORIES, DEFAULT_CONDITIONS, NOT_GRADED, PRESETS_LEFT_OUT, conditions, draw_condition, graded_kwargs,
+    markdown_table, randomization_pool, resolve,
+)
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 PLUMBING = {"sensor_configs"}  # kwargs the mixins take for each other, not perturbations
@@ -161,6 +164,36 @@ def test_ungraded_conditions_parse_differ_and_are_complete():
     assert {c.kwarg for c in CATEGORIES.values()} <= {"lighting", "texture", "table_material"}
 
 
+def test_randomization_pool_is_the_runs_the_scripts_make():
+    """`kwarg="randomize"` draws from the unperturbed scene plus what `run_sweep.plan` and
+    `run_ungraded.plan` run for that kwarg: no more, no fewer, all distinct and all parsing."""
+    assert set(DEFAULT_CONDITIONS) == {"lighting", "texture", "table_material", "distractors", "viewpoint", "corruption"}
+    for kwarg, default in DEFAULT_CONDITIONS.items():
+        pool = randomization_pool(kwarg)
+        assert pool[0] == default and len(set(pool)) == len(pool), kwarg
+        want = sum(
+            len([v for v in a.grid if v != a.neutral and a.valid(v) is None])
+            for a in AXES.values() if a.kwarg == kwarg
+        ) + sum(len(c.conditions) for c in CATEGORIES.values() if c.kwarg == kwarg)
+        assert len(pool) == 1 + want, (kwarg, len(pool), want)
+        for condition in pool[1:]:
+            assert resolve(kwarg, condition) != resolve(kwarg, default), (kwarg, condition)
+    assert "bright-set-0.3-1" not in randomization_pool("lighting"), "the neutral point is the default, once"
+    assert {"marble", "gold"} <= set(randomization_pool("table_material"))
+    assert "object-dots" in randomization_pool("texture")
+    assert randomization_pool("distractors") == (0, 1, 2, 3)
+
+
+def test_draw_condition_is_seeded_uniform_and_filterable():
+    pool = randomization_pool("lighting")
+    drawn = [draw_condition("lighting", np.random.default_rng(i)) for i in range(2000)]
+    assert drawn == [draw_condition("lighting", np.random.default_rng(i)) for i in range(2000)]
+    assert set(drawn) == set(pool), "every run of the evaluation is reachable"
+    assert max(drawn.count(c) for c in pool) < 3 * len(drawn) / len(pool), "roughly uniform"
+    only = {draw_condition("texture", np.random.default_rng(i), lambda c: not c.startswith("object-")) for i in range(200)}
+    assert only and not any(c.startswith("object-") for c in only)
+
+
 def test_readme_table_is_the_registry():
     text = README.read_text()
     start, end = (text.index(m) for m in TABLE_MARKERS)
@@ -183,6 +216,8 @@ if __name__ == "__main__":
         test_declared_ranges_are_what_the_parsers_accept,
         test_axes_module_needs_no_heavy_imports,
         test_ungraded_conditions_parse_differ_and_are_complete,
+        test_randomization_pool_is_the_runs_the_scripts_make,
+        test_draw_condition_is_seeded_uniform_and_filterable,
         test_readme_table_is_the_registry,
     ]
     for test in tests:

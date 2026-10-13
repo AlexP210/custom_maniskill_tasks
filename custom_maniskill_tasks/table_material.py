@@ -143,6 +143,10 @@ class TableMaterialMixin:
         """The material this env's table was built with; "default" is the stock wood."""
         return self._table_material
 
+    def _set_table_material(self, condition) -> None:
+        """Take `condition` as this env's material from the next reconfiguration (`randomize`)."""
+        self._table_material = canonical_table_material(condition)
+
     def _load_scene(self, options: dict):
         super()._load_scene(options)
         if self._table_material != DEFAULT_TABLE_MATERIAL:

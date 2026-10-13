@@ -208,14 +208,34 @@ class ViewpointMixin:
     def __init__(self, *args, viewpoint=DEFAULT_VIEWPOINT, sensor_configs=None, **kwargs):
         self._viewpoint_spec = viewpoint
         self._viewpoint = canonical_viewpoint(viewpoint)
+        self._wrist_camera_unshifted = dict((sensor_configs or {}).get(WRIST_CAMERA_UID, {}))
         if not self._viewpoint.is_default:
             sensor_configs = dict(sensor_configs or {})
-            camera = dict(sensor_configs.get(WRIST_CAMERA_UID, {}))
+            sensor_configs[WRIST_CAMERA_UID] = self._shifted_wrist_camera()
+        super().__init__(*args, sensor_configs=sensor_configs, **kwargs)
+
+    def _shifted_wrist_camera(self) -> dict:
+        """The wrist camera's `sensor_configs` entry: what the caller gave, with this env's pose and
+        fov merged in."""
+        camera = dict(self._wrist_camera_unshifted)
+        if not self._viewpoint.is_default:
             camera["pose"] = wrist_camera_local_pose(self._viewpoint)
             if self._viewpoint.fov is not None:
                 camera["fov"] = self._viewpoint.fov
-            sensor_configs[WRIST_CAMERA_UID] = camera
-        super().__init__(*args, sensor_configs=sensor_configs, **kwargs)
+        return camera
+
+    def _set_viewpoint(self, condition) -> None:
+        """Take `condition` as this env's viewpoint from the next reconfiguration (`randomize`).
+        The cameras are built from `_custom_sensor_configs` every time the scene is, so the new
+        pose goes there, over the one the last draw left."""
+        self._viewpoint = canonical_viewpoint(condition)
+        configs = dict(self._custom_sensor_configs or {})
+        camera = self._shifted_wrist_camera()
+        if camera:
+            configs[WRIST_CAMERA_UID] = camera
+        else:
+            configs.pop(WRIST_CAMERA_UID, None)
+        self._custom_sensor_configs = configs
 
     @property
     def viewpoint(self) -> ViewpointConfig:

@@ -116,6 +116,10 @@ class DistractorsMixin:
         """The YCB model of each distractor, in order."""
         return YCB_POOL[: self._num_distractors]
 
+    def _set_distractors(self, condition) -> None:
+        """Take `condition` as this env's count from the next reconfiguration (`randomize`)."""
+        self._num_distractors = canonical_distractors(condition)
+
     def _load_scene(self, options: dict):
         super()._load_scene(options)
         self._distractor_actors = {}

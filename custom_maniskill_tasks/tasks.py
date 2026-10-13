@@ -40,6 +40,7 @@ from mani_skill.utils.registration import REGISTERED_ENVS, register_env
 
 from custom_maniskill_tasks.lighting import LightingMixin
 from custom_maniskill_tasks.perturbations import PerturbationsMixin
+from custom_maniskill_tasks.randomize import RandomizationMixin
 
 CONTROL_MODE = "pd_ee_delta_pos"
 
@@ -91,7 +92,7 @@ class FullHorizonMixin:
 @register_env(
     "PushCube-v1.1", max_episode_steps=_horizon("PushCube-v1"), control_mode=CONTROL_MODE
 )
-class PushCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin, PushCubeEnv):
+class PushCubeFullHorizonEnv(FullHorizonMixin, RandomizationMixin, LightingMixin, PerturbationsMixin, PushCubeEnv):
     """PushCube-v1 with no early termination and the appearance kwargs above."""
 
     object_of_interest = "obj"
@@ -105,7 +106,7 @@ class PushCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin
     "PlaceSphere-v1.1", max_episode_steps=_horizon("PlaceSphere-v1"), control_mode=CONTROL_MODE
 )
 class PlaceSphereFullHorizonEnv(
-    FullHorizonMixin, LightingMixin, PerturbationsMixin, PlaceSphereEnv
+    FullHorizonMixin, RandomizationMixin, LightingMixin, PerturbationsMixin, PlaceSphereEnv
 ):
     """PlaceSphere-v1 with no early termination and the appearance kwargs above."""
 
@@ -119,7 +120,7 @@ class PlaceSphereFullHorizonEnv(
     control_mode=CONTROL_MODE,
 )
 class LiftPegUprightFullHorizonEnv(
-    FullHorizonMixin, LightingMixin, PerturbationsMixin, LiftPegUprightEnv
+    FullHorizonMixin, RandomizationMixin, LightingMixin, PerturbationsMixin, LiftPegUprightEnv
 ):
     """LiftPegUpright-v1 with no early termination and the appearance kwargs above."""
 
@@ -130,7 +131,7 @@ class LiftPegUprightFullHorizonEnv(
 @register_env(
     "PokeCube-v1.1", max_episode_steps=_horizon("PokeCube-v1"), control_mode=CONTROL_MODE
 )
-class PokeCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin, PokeCubeEnv):
+class PokeCubeFullHorizonEnv(FullHorizonMixin, RandomizationMixin, LightingMixin, PerturbationsMixin, PokeCubeEnv):
     """PokeCube-v1 with no early termination and the appearance kwargs above.
 
     Has no single object of interest (a cube and the peg that pokes it), so `texture` has no
@@ -142,7 +143,7 @@ class PokeCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin
 @register_env(
     "PickCube-v1.1", max_episode_steps=_horizon("PickCube-v1"), control_mode=CONTROL_MODE
 )
-class PickCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin, PickCubeEnv):
+class PickCubeFullHorizonEnv(FullHorizonMixin, RandomizationMixin, LightingMixin, PerturbationsMixin, PickCubeEnv):
     """PickCube-v1 with no early termination and the appearance kwargs above."""
 
     object_of_interest = "cube"
@@ -156,7 +157,7 @@ class PickCubeFullHorizonEnv(FullHorizonMixin, LightingMixin, PerturbationsMixin
     control_mode=CONTROL_MODE,
 )
 class PickSingleYCBFullHorizonEnv(
-    FullHorizonMixin, LightingMixin, PerturbationsMixin, PickSingleYCBEnv
+    FullHorizonMixin, RandomizationMixin, LightingMixin, PerturbationsMixin, PickSingleYCBEnv
 ):
     """PickSingleYCB-v1 with no early termination and the appearance kwargs above.
 

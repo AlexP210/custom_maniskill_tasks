@@ -86,6 +86,27 @@ same scene without being told. A default one is not passed at all, so existing r
 is unchanged. Asking for any on a stock `-v1` id raises rather than silently doing nothing, as does
 an unknown keyword. Keywords stack with `+` (except `distractors`, which is a count).
 
+### Randomizing
+
+Any of the six also takes `"randomize"`, which draws the condition afresh on every reset from what
+the evaluation runs: for each kwarg, the unperturbed scene, every non-neutral point on its axes'
+grids in `axes.py` (what `run_sweep.py` runs) and every named material or pattern in `CATEGORIES`
+(what `run_ungraded.py` runs), each equally likely (`axes.randomization_pool(kwarg)`).
+
+```python
+env = make_env("LiftPegUpright-v1.1", camera_view="wrist",
+               lighting="randomize", viewpoint="randomize", corruption="randomize")
+env.reset(seed=3)
+env.unwrapped.episode_perturbation   # {'lighting': 'warm-set-0.4', 'viewpoint': 'default', 'corruption': 'blur-0.8'}
+```
+
+The kwargs are independent, so randomizing several stacks one draw from each (the evaluation runs
+one perturbation at a time); one left at a fixed value stays fixed. The draw is seeded by the reset
+seed, so the same `reset(seed=...)` gives the same condition, and is shared by all parallel envs.
+Everything but `corruption` changes what is built, so a randomized one makes the env reconfigure on
+every reset (`reconfiguration_freq=1`, slower, and every env must reset together). `viewpoint` needs
+`camera_view="wrist"`. See `randomize.py`.
+
 `perturbation_sheet.py` renders any combination side by side, wrist camera and third-person view,
 for looking at them:
 

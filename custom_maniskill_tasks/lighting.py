@@ -1202,6 +1202,10 @@ class LightingMixin:
         (preset, severity, and the config built from them); None otherwise."""
         return self._episode_lighting
 
+    def _set_lighting(self, condition) -> None:
+        """Take `condition` as this env's lighting from the next reconfiguration (`randomize`)."""
+        self._lighting = canonical_lighting(condition)
+
     def _warn_if_task_lights_itself(self) -> None:
         mro = type(self).__mro__
         after_mixin = mro[mro.index(LightingMixin) + 1 :]
