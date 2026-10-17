@@ -136,6 +136,25 @@ AXES: dict[str, Axis] = {a.name: a for a in (
 )}
 
 
+RIG_AXES: dict[str, dict[str, Axis]] = {
+    "fr3_zed": {a.name: a for a in (
+        Axis("viewpoint.fov", "viewpoint", lambda v: f"fov-{_num(v)}", "degrees",
+             52.517, _even(42, 62), keywords=("fov",), lo=10, hi=170,
+             note="the ZED's centre crop is 52.517; allowed 10 to 170"),
+    )},
+}
+"""Axes whose scale depends on the wrist camera (`cameras.WristRig`), by rig name, replacing the same-named
+entry of `AXES` (which is the Panda's realsense). Only the field of view: the others are shifts relative
+to whichever camera it is, so the same grids apply."""
+
+DEFAULT_RIG = "panda"
+
+
+def axes_for(rig: str = DEFAULT_RIG) -> dict[str, Axis]:
+    """`AXES` as they are for the wrist camera `rig`."""
+    return {**AXES, **RIG_AXES.get(rig, {})}
+
+
 NOT_GRADED: dict[str, str] = {
     "table_material": "categorical: seven named materials with no order between them",
     "texture": "categorical: pattern x target; the repeat count `n` changes spatial frequency only, "
@@ -200,16 +219,17 @@ DEFAULT_CONDITIONS: dict[str, str | int] = {
 
 
 @functools.lru_cache(maxsize=None)
-def randomization_pool(kwarg: str) -> tuple[str | int, ...]:
+def randomization_pool(kwarg: str, rig: str = DEFAULT_RIG) -> tuple[str | int, ...]:
     """The kwarg values `kwarg="randomize"` draws from, one per run the evaluation scripts make
     for that kwarg: the unperturbed scene once (`DEFAULT_CONDITIONS`), every non-neutral point on
     each of its axes' grids that the parser accepts (as `run_sweep.plan` does), and each condition
     of its ungraded categories (as `run_ungraded.plan` does). Each is equally likely, so an axis
-    with more grid points is drawn more often, as it is run more often."""
+    with more grid points is drawn more often, as it is run more often. `rig` names the wrist camera
+    (`axes_for`)."""
     if kwarg not in DEFAULT_CONDITIONS:
         raise KeyError(f"{kwarg!r} is not a perturbation kwarg, expected one of {', '.join(DEFAULT_CONDITIONS)}")
     pool = [DEFAULT_CONDITIONS[kwarg]]
-    for a in AXES.values():
+    for a in axes_for(rig).values():
         if a.kwarg == kwarg:
             pool += [a.condition(v) for v in a.grid if v != a.neutral and a.valid(v) is None]
     for category in CATEGORIES.values():
@@ -218,11 +238,13 @@ def randomization_pool(kwarg: str) -> tuple[str | int, ...]:
     return tuple(pool)
 
 
-def draw_condition(kwarg: str, rng, accept: Callable[[str | int], bool] | None = None) -> str | int:
+def draw_condition(
+    kwarg: str, rng, accept: Callable[[str | int], bool] | None = None, rig: str = DEFAULT_RIG
+) -> str | int:
     """One value from `randomization_pool(kwarg)`, uniformly, using `rng` (anything with numpy's
     `Generator.integers`). `accept` drops the values a particular env cannot take (`object-` textures
     on a task with no single object)."""
-    pool = randomization_pool(kwarg)
+    pool = randomization_pool(kwarg, rig)
     if accept is not None:
         pool = tuple(c for c in pool if accept(c))
     return pool[int(rng.integers(len(pool)))]
@@ -245,17 +267,17 @@ def resolve(kwarg: str, value):
     }[kwarg](value)
 
 
-def axis(name: str) -> Axis:
+def axis(name: str, rig: str = DEFAULT_RIG) -> Axis:
     try:
-        return AXES[name]
+        return axes_for(rig)[name]
     except KeyError:
         raise KeyError(f"Unknown axis {name!r}, expected one of {', '.join(AXES)}") from None
 
 
-def conditions(name: str, values=None) -> list[tuple[float, str | int]]:
+def conditions(name: str, values=None, rig: str = DEFAULT_RIG) -> list[tuple[float, str | int]]:
     """`(value, kwarg value)` for each of `values` (default: the axis's grid), in order. The kwarg
     value goes straight into `make_env(..., **{axis(name).kwarg: it})`."""
-    a = axis(name)
+    a = axis(name, rig)
     return [(v, a.condition(v)) for v in (a.grid if values is None else values)]
 
 

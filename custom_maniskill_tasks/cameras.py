@@ -15,6 +15,7 @@ as data, not as tunables.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 
 import numpy as np
 import sapien
@@ -83,6 +84,43 @@ WRIST_CAMERA_LOCAL_POSE = sapien.Pose(
 own frame, as sapien has it). Both `PandaHandCam` and `panda_wristcam` mount it here."""
 
 
+@dataclass(frozen=True, eq=False)
+class WristRig:
+    """Everything about one robot's wrist camera that the viewpoint and distractor geometry needs.
+
+    A rig is a property of the robot a task is built on, not of the task: `PANDA_RIG` is the
+    realsense every `-v1.1` dataset was rendered with, `fr3.FR3_ZED_RIG` the ZED mini on the
+    real FR3. `ViewpointConfig` carries the rig it was parsed for, so every helper that takes a
+    config (projection, `in_wrist_view`, `visible_table_bounds`) uses the right camera.
+    """
+
+    name: str
+    fov: float
+    """Vertical field of view (rad), sapien's convention; the images are square, so it is also the horizontal one."""
+    local_pose: sapien.Pose
+    """The camera's pose in the frame of the link it is mounted on, in sapien's camera frame (x forward, y left, z up)."""
+    nominal_position: np.ndarray
+    nominal_quaternion: np.ndarray
+    """Where the camera is in the world at reset, before qpos noise (`robot_init_qpos_noise`), wxyz.
+    Measured off the built env, and checked against it by `tests/test_fr3.py` / `test_viewpoint.py`."""
+    finger_line: float
+    """How far down the image (fraction of its height) the gripper's fingers begin to get in the way."""
+    wrist_robot_uid: str | None = None
+    """The robot uid that has this camera built in, which `make_env` selects under `camera_view="wrist"`.
+    None where the camera is instead added to the stock robot (`PandaHandCam`)."""
+
+
+PANDA_RIG = WristRig(
+    name="panda",
+    fov=WRIST_CAMERA_FOV,
+    local_pose=WRIST_CAMERA_LOCAL_POSE,
+    nominal_position=np.array([0.0465, 0.02, 0.2372]),
+    nominal_quaternion=np.array([0.70710678, 0.0, 0.70710678, 0.0]),  # looking straight down from 0.24 m
+    finger_line=0.62,
+)
+"""The realsense on `panda_wristcam` / `PandaHandCam`, at the 108 degree fov the `-v1.1` datasets use."""
+
+
 class PandaHandCam(Panda):
     """The stock Panda with the wrist realsense that ManiSkill only ships on `panda_wristcam`.
 
@@ -123,6 +161,7 @@ def build_sensor_configs(
     camera_view: str,
     resolution: int | None = DEFAULT_CAMERA_RESOLUTION,
     focused_camera_uid: str = FOCUSED_CAMERA_UID,
+    rig: WristRig = PANDA_RIG,
 ) -> dict:
     """The `sensor_configs` kwarg for `gym.make` that realizes `camera_view`.
 
@@ -145,7 +184,7 @@ def build_sensor_configs(
         # fixed pose relative to panda_hand, so the pose needs no override. The fov does: tasks
         # that default to `panda_wristcam` bring their own hand_camera at the stock pi/2 and
         # never consult the `panda` uid that PandaHandCam overrides.
-        configs[WRIST_CAMERA_UID] = dict(fov=WRIST_CAMERA_FOV)
+        configs[WRIST_CAMERA_UID] = dict(fov=rig.fov)
         return configs
     if view == "focused":
         camera_pose = sapien_utils.look_at(
@@ -213,7 +252,9 @@ _wrist_agent_registered = False
 
 
 @contextlib.contextmanager
-def camera_view_applied(camera_view: str, task_name: str, wrist_only: bool = True):
+def camera_view_applied(
+    camera_view: str, task_name: str, wrist_only: bool = True, rig: WristRig = PANDA_RIG
+):
     """Hold the side effects `camera_view` needs, for the duration of a `gym.make` call.
 
     Only the wrist view needs any: a camera has to be added to the robot (the link to mount it on
@@ -240,8 +281,10 @@ def camera_view_applied(camera_view: str, task_name: str, wrist_only: bool = Tru
         yield
         return
 
-    _register_wrist_camera_panda()
-    _wrist_agent_registered = True
+    if rig is PANDA_RIG:
+        # only the Panda needs a camera added to it; the FR3 agent carries its own (see `fr3`)
+        _register_wrist_camera_panda()
+        _wrist_agent_registered = True
     if wrist_only:
         with _task_without_default_sensors(task_name):
             yield

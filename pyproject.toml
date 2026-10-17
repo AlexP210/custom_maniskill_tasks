@@ -15,3 +15,6 @@ requires-python = ">=3.9"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["custom_maniskill_tasks*"]
+
+[tool.setuptools.package-data]
+custom_maniskill_tasks = ["assets/fr3/*.urdf", "assets/fr3/meshes/**/*", "assets/fr3/LICENSE.*", "assets/fr3/NOTICE.*"]

@@ -38,6 +38,7 @@ from mani_skill.envs.tasks.tabletop.poke_cube import PokeCubeEnv
 from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
 from mani_skill.utils.registration import REGISTERED_ENVS, register_env
 
+from custom_maniskill_tasks.fr3 import FR3Mixin
 from custom_maniskill_tasks.lighting import LightingMixin
 from custom_maniskill_tasks.perturbations import PerturbationsMixin
 from custom_maniskill_tasks.randomize import RandomizationMixin
@@ -169,3 +170,35 @@ class PickSingleYCBFullHorizonEnv(
 
     object_of_interest = "obj"
     distractor_avoid = (("obj", (0.0, 0.0), (0.07, 0.07)),)
+
+
+# --------------------------------------------------------------------------- #
+# -v1.2: the same tasks on the Franka Research 3, with the real robot's wrist camera
+# --------------------------------------------------------------------------- #
+FR3_TASKS = {
+    "PushCube-v1.2": ("PushCube-v1.1", PushCubeFullHorizonEnv),
+    "PlaceSphere-v1.2": ("PlaceSphere-v1.1", PlaceSphereFullHorizonEnv),
+    "LiftPegUpright-v1.2": ("LiftPegUpright-v1.1", LiftPegUprightFullHorizonEnv),
+    "PokeCube-v1.2": ("PokeCube-v1.1", PokeCubeFullHorizonEnv),
+    "PickCube-v1.2": ("PickCube-v1.1", PickCubeFullHorizonEnv),
+    "PickSingleYCB-v1.2": ("PickSingleYCB-v1.1", PickSingleYCBFullHorizonEnv),
+}
+"""Each `-v1.2` id with the `-v1.1` id and class it derives from. Same scene, dynamics, reward,
+success predicate, horizon, control mode and appearance kwargs as the `-v1.1` task; what changes is
+the robot (a Franka Research 3, `fr3.FR3`) and, under `camera_view="wrist"`, the camera (the ZED
+mini on the real robot, `fr3.FR3_ZED_RIG`, rendered at the 224 x 224 the policy is given)."""
+
+for _id, (_base_id, _base_cls) in FR3_TASKS.items():
+    _spec = REGISTERED_ENVS[_base_id]
+    register_env(
+        _id,
+        max_episode_steps=_spec.max_episode_steps,
+        asset_download_ids=_spec.asset_download_ids,
+        control_mode=CONTROL_MODE,
+    )(
+        type(
+            _base_cls.__name__.replace("FullHorizon", "FR3"),
+            (FR3Mixin, _base_cls),
+            {"__doc__": f"{_base_id} on the Franka Research 3 (see `fr3`)."},
+        )
+    )

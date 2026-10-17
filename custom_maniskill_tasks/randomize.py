@@ -80,7 +80,10 @@ class RandomizationMixin:
         # task's own draws and of the other kwargs'
         seed = int(self._episode_seed[0]) % 2**63
         rng = np.random.default_rng([seed, zlib.crc32(kwarg.encode())])
-        condition = draw_condition(kwarg, rng, lambda c: self._accepts_randomized(kwarg, c))
+        rig = getattr(self, "WRIST_RIG", None)  # the wrist camera's own scales (the fov axis)
+        condition = draw_condition(
+            kwarg, rng, lambda c: self._accepts_randomized(kwarg, c), **({"rig": rig.name} if rig else {})
+        )
         getattr(self, f"_set_{kwarg}")(condition)
         self._episode_perturbation[kwarg] = condition
 

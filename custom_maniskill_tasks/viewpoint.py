@@ -10,7 +10,7 @@ non-negative number -- there are no signs, since "+" joins keywords and "-" is p
 | `pitch-up|pitch-down-<deg>` | turn it, so the view tilts up / down |
 | `yaw-left|yaw-right-<deg>` | turn it, so the view swings left / right |
 | `roll-left|roll-right-<deg>` | roll it, left side down / right side down |
-| `fov-<deg>` | set the field of view outright (the default is `WRIST_CAMERA_FOV`, 108) |
+| `fov-<deg>` | set the field of view outright (the default is the rig's: 108 on the Panda's realsense, 52.5 on the FR3's ZED) |
 
 The same axis named twice adds up, so `left-2+right-2` is no shift. `"default"` (or an empty
 list) leaves the camera where the robot mounts it.
@@ -24,7 +24,7 @@ distractors use to keep their objects in view.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 import numpy as np
@@ -32,18 +32,19 @@ from transforms3d.quaternions import mat2quat, qmult, quat2mat
 
 from custom_maniskill_tasks.cameras import (
     DEFAULT_CAMERA_RESOLUTION,
-    WRIST_CAMERA_FOV,
-    WRIST_CAMERA_LOCAL_POSE,
+    PANDA_RIG,
     WRIST_CAMERA_UID,
+    WristRig,
 )
 
 DEFAULT_VIEWPOINT = "default"
 
-NOMINAL_WRIST_CAMERA_POSITION = np.array([0.0465, 0.02, 0.2372])
-NOMINAL_WRIST_CAMERA_QUATERNION = np.array([0.70710678, 0.0, 0.70710678, 0.0])  # wxyz
-"""Where the wrist camera is in the world at reset, before any qpos noise (`robot_init_qpos_noise`,
-which moves it a few centimetres either way): looking straight down from 0.24 m, its image "up"
-being world +x and its image "left" world +y. Measured off the built env rather than derived."""
+NOMINAL_WRIST_CAMERA_POSITION = PANDA_RIG.nominal_position
+NOMINAL_WRIST_CAMERA_QUATERNION = PANDA_RIG.nominal_quaternion  # wxyz
+"""Where the Panda's wrist camera is in the world at reset, before any qpos noise
+(`robot_init_qpos_noise`, which moves it a few centimetres either way): looking straight down from
+0.24 m, its image "up" being world +x and its image "left" world +y. Measured off the built env
+rather than derived. Each `WristRig` carries its own; these are `PANDA_RIG`'s."""
 
 _AXIS = re.compile(
     r"^(?P<name>left|right|up|down|forward|back|pitch-up|pitch-down|yaw-left|yaw-right|"
@@ -71,6 +72,8 @@ class ViewpointConfig:
     pitch: float = 0.0
     roll: float = 0.0
     fov: float | None = None
+    rig: WristRig = field(default=PANDA_RIG, compare=False)
+    """The camera this shift is a shift of; not part of what makes two shifts equal."""
 
     @property
     def is_default(self) -> bool:
@@ -78,7 +81,7 @@ class ViewpointConfig:
 
     @property
     def field_of_view(self) -> float:
-        return WRIST_CAMERA_FOV if self.fov is None else self.fov
+        return self.rig.fov if self.fov is None else self.fov
 
     def delta(self) -> tuple[np.ndarray, np.ndarray]:
         """(position, wxyz quaternion) of the shifted camera relative to the nominal one."""
@@ -92,13 +95,15 @@ class ViewpointConfig:
 DEFAULT_VIEWPOINT_CONFIG = ViewpointConfig()
 
 
-def canonical_viewpoint(viewpoint: str | Sequence[str] | ViewpointConfig | None) -> ViewpointConfig:
-    """Resolve a `viewpoint` into a `ViewpointConfig`, rejecting unknown keywords early -- a
-    misspelled one that fell through would build a working env from the unshifted viewpoint."""
+def canonical_viewpoint(
+    viewpoint: str | Sequence[str] | ViewpointConfig | None, rig: WristRig = PANDA_RIG
+) -> ViewpointConfig:
+    """Resolve a `viewpoint` into a `ViewpointConfig` on `rig`, rejecting unknown keywords early --
+    a misspelled one that fell through would build a working env from the unshifted viewpoint."""
     if isinstance(viewpoint, ViewpointConfig):
-        return viewpoint
+        return viewpoint if viewpoint.rig is rig else replace(viewpoint, rig=rig)
     if viewpoint is None:
-        return DEFAULT_VIEWPOINT_CONFIG
+        return replace(DEFAULT_VIEWPOINT_CONFIG, rig=rig)
     parts = viewpoint.split("+") if isinstance(viewpoint, str) else list(viewpoint)
     translation = np.zeros(3)
     angles = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
@@ -126,25 +131,26 @@ def canonical_viewpoint(viewpoint: str | Sequence[str] | ViewpointConfig | None)
             angles[{"z": "yaw", "y": "pitch", "x": "roll"}[axis]] += float(sign * np.deg2rad(value))
     return ViewpointConfig(
         translation=tuple(float(t) for t in translation),
-        yaw=angles["yaw"], pitch=angles["pitch"], roll=angles["roll"], fov=fov,
+        yaw=angles["yaw"], pitch=angles["pitch"], roll=angles["roll"], fov=fov, rig=rig,
     )
 
 
 def wrist_camera_local_pose(config: ViewpointConfig) -> list[float]:
-    """[px, py, pz, qw, qx, qy, qz]: the camera's pose in the frame of `panda_hand`, shifted. A
-    plain list, as `sensor_configs` takes and as json records."""
+    """[px, py, pz, qw, qx, qy, qz]: the camera's pose in the frame of the link it is mounted on
+    (`panda_hand`, `fr3_hand_tcp`), shifted. A plain list, as `sensor_configs` takes and as json
+    records."""
     import sapien
 
     p, q = config.delta()
-    pose = WRIST_CAMERA_LOCAL_POSE * sapien.Pose(p=p, q=q)
+    pose = config.rig.local_pose * sapien.Pose(p=p, q=q)
     return [float(x) for x in (*pose.p, *pose.q)]
 
 
 def wrist_camera_world_pose(config: ViewpointConfig) -> tuple[np.ndarray, np.ndarray]:
     """(position, rotation matrix) of the shifted camera in the world at reset, before noise."""
     p, q = config.delta()
-    rotation = quat2mat(NOMINAL_WRIST_CAMERA_QUATERNION)
-    return NOMINAL_WRIST_CAMERA_POSITION + rotation @ p, rotation @ quat2mat(q)
+    rotation = quat2mat(config.rig.nominal_quaternion)
+    return config.rig.nominal_position + rotation @ p, rotation @ quat2mat(q)
 
 
 def project_to_wrist_image(
@@ -166,9 +172,9 @@ def project_to_wrist_image(
     )
 
 
-FINGER_LINE = 0.62
-"""How far down the image (as a fraction of its height) the gripper's fingers begin to get in the
-way; anything the distractors put below it could be hidden."""
+FINGER_LINE = PANDA_RIG.finger_line
+"""How far down the Panda's image (as a fraction of its height) the gripper's fingers begin to get
+in the way; anything the distractors put below it could be hidden. Per rig: `WristRig.finger_line`."""
 
 
 def in_wrist_view(
@@ -180,7 +186,7 @@ def in_wrist_view(
     return (
         (depth > 0)
         & (u > border) & (u < 1 - border)
-        & (v > border) & (v < FINGER_LINE)
+        & (v > border) & (v < config.rig.finger_line)
     )
 
 
@@ -205,9 +211,12 @@ class ViewpointMixin:
     `ViewpointConfig` says. Merges the pose and fov into `sensor_configs`, where ManiSkill applies
     them over the camera's own, so `camera_view="wrist"` is still what puts the camera there."""
 
+    WRIST_RIG: WristRig = PANDA_RIG
+    """The wrist camera this task's robot carries; the FR3 tasks override it."""
+
     def __init__(self, *args, viewpoint=DEFAULT_VIEWPOINT, sensor_configs=None, **kwargs):
         self._viewpoint_spec = viewpoint
-        self._viewpoint = canonical_viewpoint(viewpoint)
+        self._viewpoint = canonical_viewpoint(viewpoint, self.WRIST_RIG)
         self._wrist_camera_unshifted = dict((sensor_configs or {}).get(WRIST_CAMERA_UID, {}))
         if not self._viewpoint.is_default:
             sensor_configs = dict(sensor_configs or {})
@@ -228,7 +237,7 @@ class ViewpointMixin:
         """Take `condition` as this env's viewpoint from the next reconfiguration (`randomize`).
         The cameras are built from `_custom_sensor_configs` every time the scene is, so the new
         pose goes there, over the one the last draw left."""
-        self._viewpoint = canonical_viewpoint(condition)
+        self._viewpoint = canonical_viewpoint(condition, self.WRIST_RIG)
         configs = dict(self._custom_sensor_configs or {})
         camera = self._shifted_wrist_camera()
         if camera:
@@ -241,6 +250,15 @@ class ViewpointMixin:
     def viewpoint(self) -> ViewpointConfig:
         """The shift this env was built with; `DEFAULT_VIEWPOINT_CONFIG` unless asked otherwise."""
         return self._viewpoint
+
+
+def rig_for_task(task_name: str) -> WristRig:
+    """The wrist camera rig the robot of `task_name` carries: `PANDA_RIG` unless the task says
+    otherwise (`WRIST_RIG`, which the FR3 tasks set)."""
+    from mani_skill.utils.registration import REGISTERED_ENVS
+
+    spec = REGISTERED_ENVS.get(task_name)
+    return getattr(spec.cls, "WRIST_RIG", PANDA_RIG) if spec is not None else PANDA_RIG
 
 
 def supports_viewpoint(task_name: str) -> bool:

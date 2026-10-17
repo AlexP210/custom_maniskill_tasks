@@ -21,6 +21,7 @@ Importing the package registers the ids this project's datasets are collected wi
 | `PokeCube-v1.1` | `PokeCube-v1` with no early termination |
 | `PickCube-v1.1` | `PickCube-v1` with no early termination |
 | `PickSingleYCB-v1.1` | `PickSingleYCB-v1` with no early termination |
+| `PushCube-v1.2`, `PlaceSphere-v1.2`, `LiftPegUpright-v1.2`, `PokeCube-v1.2`, `PickCube-v1.2`, `PickSingleYCB-v1.2` | the `-v1.1` task of the same name on the Franka Research 3, with the real robot's ZED mini wrist camera: see [FR3 and the ZED mini](#fr3-and-the-zed-mini-v12) |
 
 `PickSingleYCB-v1.1` is the one id whose scene is not fixed: the YCB object in it is drawn per
 parallel env at reconfiguration, and the stock task's own `reconfiguration_freq` default (1 at
@@ -192,7 +193,7 @@ non-negative number, stacked with `+` (there are no signs, since `+` joins keywo
 | `pitch-up`, `pitch-down` `-<deg>` | turn it so the view tilts up / down |
 | `yaw-left`, `yaw-right` `-<deg>` | turn it so the view swings left / right |
 | `roll-left`, `roll-right` `-<deg>` | roll it, left / right side down |
-| `fov-<deg>` | set the field of view outright (the default is 108) |
+| `fov-<deg>` | set the field of view outright (the default is the camera's own: 108 on the `-v1.1` tasks' realsense, 52.517 on the `-v1.2` tasks' ZED) |
 
 The same axis twice adds up (`left-2+right-2` is no shift). It acts through the camera's
 `sensor_configs`, and `make_env` checks the built camera is where it was asked to be. A large `back`
@@ -356,6 +357,51 @@ place on the next step. A frame buffer that stored the tensor would hold N refer
 current frame and stack it with itself — an env that looks fine until a model is asked to infer
 motion from it. `tests/test_make_env.py::test_image_frames_are_not_aliased` guards this.
 
+## FR3 and the ZED mini (v1.2)
+
+For sim-to-real: the `-v1.2` ids are the `-v1.1` tasks (same scene, dynamics, reward, success
+predicate, 50-step horizon, `pd_ee_delta_pos`, and the same perturbation kwargs) on the robot and
+camera the real setup has -- a Franka Research 3 with a ZED mini on the hand. Use them with
+`camera_view="wrist"`:
+
+```python
+env = make_env("PickCube-v1.2", camera_view="wrist")   # 224 x 224 hand_camera, robot "fr3_zed"
+```
+
+**Robot.** ManiSkill has no FR3, so `fr3.py` builds one from Franka's `franka_description`
+(Apache-2.0; URDF and meshes under `custom_maniskill_tasks/assets/fr3`, with its licence and
+NOTICE; `build_fr3_assets.py` regenerates them from a checkout). It shares the Panda's seven joints,
+Franka Hand, 0.1034 m TCP and rest pose, so the controllers and grasp logic are the Panda's;
+the FR3's own joint limits and `fr3_*` names apply. `robot_uids` is `fr3` (arm and hand alone, what
+every other camera view gets) or `fr3_zed` (the same with the camera, which `make_env` picks under
+`camera_view="wrist"` and which is recorded into a trajectory's env kwargs). A `-v1.2` task refuses
+another robot. The stock tasks choose their start pose by comparing `robot_uids` to `"panda"`, so
+`FR3Mixin` has them see a panda while those hooks run; `tests/test_fr3.py` checks the reset TCP
+and joints equal the Panda's on all six tasks and that `PickCube`'s reward takes the panda branch.
+
+**Camera.** Pose and intrinsics are the real unit's (`ZED_CAMERA_SIM_CONFIG.md`): mounted on
+`fr3_hand_tcp` at (0.0642, -0.0315, -0.0640) m, RPY (0, -20, 90) degrees in the ROS convention
+(converted to sapien's; the optical axis in the TCP frame is (-0.342, 0, 0.940)), 2 mm near clip,
+no mount model. The ZED SDK's rectified HD720 left image has HFOV 82.504 degrees (`fx` =
+729.734 px at 1280 wide). The policy sees 224 x 224, so **the real side must take the centre
+720 x 720 crop of that rectified frame and resize it to 224 x 224**; that is a square pinhole
+image with the 720 rows' 52.517 degree field of view on both axes (`fx = fy` = 227 px), which is what is
+rendered. Any other real-side preprocessing is not what this simulates. No photometric or
+camera-jitter randomization is applied: the existing `lighting`, `corruption` and `viewpoint`
+kwargs are the only perturbations.
+
+**What differs from `-v1.1` in the perturbation machinery.** The camera is a `WristRig`
+(`cameras.py`): `ViewpointConfig` carries the rig it was parsed for, so the viewpoint geometry, the
+distractor visibility test and the nominal camera pose all follow the robot. `viewpoint.fov`'s axis
+is re-centred on 52.517 (grid 42 to 62) for the ZED (`axes.RIG_AXES`, `axes.axis(name, "fr3_zed")`),
+and `viewpoint="randomize"` draws from that. Two things to know:
+
+- the ZED sees only about 16 x 21 cm of table at reset, so `distractors` are always put inside
+  the view but cannot be kept clear of the task's own objects and of each other as on the Panda (one
+  distractor overlapped in 4 of 10 resets, two or three in all 10, over seeds 0-9), and the placement falls back
+  to the roomiest visible spot;
+- the corruption grids (`blur`, `lowres`) are in pixels of the 224 x 224 image, as before, and were set for the Panda's view; they have not been re-tuned for the ZED.
+
 ## Tests
 
 No pytest in the project environment, so the files run standalone:
@@ -367,6 +413,7 @@ python tests/test_perturbations.py   # corruption, viewpoint and texture
 python tests/test_axes.py       # the graded-axis registry against the parsers, no simulator
 python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_skip equivalence
 python tests/test_lighting.py   # presets: default parity, that each shift shows, per-env draws
+python tests/test_fr3.py        # the -v1.2 ids: the FR3, the ZED's pose and intrinsics, rig-aware viewpoint
 ```
 
 `test_wrappers.py` covers what the simulator cannot show: staggered episode ends across a batch

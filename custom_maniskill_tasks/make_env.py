@@ -42,6 +42,7 @@ from custom_maniskill_tasks.viewpoint import (
     DEFAULT_VIEWPOINT_CONFIG,
     canonical_viewpoint,
     check_viewpoint,
+    rig_for_task,
     supports_viewpoint,
 )
 from custom_maniskill_tasks.randomize import is_randomize
@@ -56,6 +57,14 @@ TASKS_IN_USE = (
     "PokeCube-v1.1",
     "PickCube-v1.1",
     "PickSingleYCB-v1.1",
+    # the same on the Franka Research 3 with the real robot's ZED mini wrist camera (see `fr3`),
+    # for sim-to-real; these ones want camera_view="wrist"
+    "PushCube-v1.2",
+    "PlaceSphere-v1.2",
+    "LiftPegUpright-v1.2",
+    "PokeCube-v1.2",
+    "PickCube-v1.2",
+    "PickSingleYCB-v1.2",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",
@@ -222,16 +231,23 @@ def make_env(
     texture_spec = () if "texture" in randomized else canonical_texture(texture)
     table_material_name = DEFAULT_TABLE_MATERIAL if "table_material" in randomized else canonical_table_material(table_material)
     distractor_count = 0 if "distractors" in randomized else canonical_distractors(distractors)
-    viewpoint_config = DEFAULT_VIEWPOINT_CONFIG if "viewpoint" in randomized else canonical_viewpoint(viewpoint)
+    rig = rig_for_task(task_name)
+    viewpoint_config = (
+        canonical_viewpoint(None, rig) if "viewpoint" in randomized else canonical_viewpoint(viewpoint, rig)
+    )
     corruption_config = DEFAULT_CORRUPTION_CONFIG if "corruption" in randomized else canonical_corruption(corruption)
     if (not viewpoint_config.is_default or "viewpoint" in randomized) and view != "wrist":
         raise ValueError(f"viewpoint={viewpoint!r} moves the wrist camera, but camera_view={camera_view!r}.")
 
-    sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid)
+    sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid, rig)
     sensor_configs.update(env_kwargs.pop("sensor_configs", {}) or {})
 
     if control_mode is not None:
         env_kwargs["control_mode"] = control_mode
+    if view == "wrist" and rig.wrist_robot_uid is not None:
+        # a robot that has its wrist camera built in (the FR3's ZED); the one without it is the
+        # task's default, so the other views do not pay to render a camera nothing reads
+        env_kwargs.setdefault("robot_uids", rig.wrist_robot_uid)
 
     if lighting_config != DEFAULT_LIGHTING or "lighting" in randomized:
         if not supports_lighting(task_name):
@@ -268,7 +284,7 @@ def make_env(
             list(value) if isinstance(value, Sequence) and not isinstance(value, str) else value
         )
 
-    with camera_view_applied(view, task_name, wrist_only=wrist_only):
+    with camera_view_applied(view, task_name, wrist_only=wrist_only, rig=rig):
         env = gym.make(
             id=task_name,
             obs_mode=obs_mode,
