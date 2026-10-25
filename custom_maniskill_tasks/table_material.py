@@ -144,7 +144,7 @@ class TableMaterialMixin:
         return self._table_material
 
     def _set_table_material(self, condition) -> None:
-        """Take `condition` as this env's material from the next reconfiguration (`randomize`)."""
+        """Take `condition` as this env's material from the next reconfiguration (`domain_randomization`)."""
         self._table_material = canonical_table_material(condition)
 
     def _load_scene(self, options: dict):

@@ -233,19 +233,6 @@ class ViewpointMixin:
                 camera["fov"] = self._viewpoint.fov
         return camera
 
-    def _set_viewpoint(self, condition) -> None:
-        """Take `condition` as this env's viewpoint from the next reconfiguration (`randomize`).
-        The cameras are built from `_custom_sensor_configs` every time the scene is, so the new
-        pose goes there, over the one the last draw left."""
-        self._viewpoint = canonical_viewpoint(condition, self.WRIST_RIG)
-        configs = dict(self._custom_sensor_configs or {})
-        camera = self._shifted_wrist_camera()
-        if camera:
-            configs[WRIST_CAMERA_UID] = camera
-        else:
-            configs.pop(WRIST_CAMERA_UID, None)
-        self._custom_sensor_configs = configs
-
     @property
     def viewpoint(self) -> ViewpointConfig:
         """The shift this env was built with; `DEFAULT_VIEWPOINT_CONFIG` unless asked otherwise."""

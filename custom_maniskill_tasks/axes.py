@@ -24,7 +24,6 @@ keyword grammar itself has no signs: `-5` on `viewpoint.pitch` is `pitch-down-5`
 
 from __future__ import annotations
 
-import functools
 from dataclasses import dataclass
 from typing import Callable
 
@@ -204,50 +203,6 @@ PRESETS_LEFT_OUT = {
 """The named lighting presets left out of the ungraded comparison, and why: a graded axis covers most of
 them, and `shadows` was dropped. `tests/test_axes.py` requires every preset to be here or `default`, so a
 new one has to be placed."""
-
-
-RANDOMIZE = "randomize"
-"""The value any perturbation kwarg takes to draw its condition afresh on every reset, from the runs
-`run_sweep.py` and `run_ungraded.py` evaluate (see `randomization_pool`). `randomize.py` does the
-drawing."""
-
-DEFAULT_CONDITIONS: dict[str, str | int] = {
-    "lighting": "default", "corruption": "default", "viewpoint": "default",
-    "texture": "default", "table_material": "default", "distractors": 0,
-}
-"""Each perturbation kwarg's value that changes nothing."""
-
-
-@functools.lru_cache(maxsize=None)
-def randomization_pool(kwarg: str, rig: str = DEFAULT_RIG) -> tuple[str | int, ...]:
-    """The kwarg values `kwarg="randomize"` draws from, one per run the evaluation scripts make
-    for that kwarg: the unperturbed scene once (`DEFAULT_CONDITIONS`), every non-neutral point on
-    each of its axes' grids that the parser accepts (as `run_sweep.plan` does), and each condition
-    of its ungraded categories (as `run_ungraded.plan` does). Each is equally likely, so an axis
-    with more grid points is drawn more often, as it is run more often. `rig` names the wrist camera
-    (`axes_for`)."""
-    if kwarg not in DEFAULT_CONDITIONS:
-        raise KeyError(f"{kwarg!r} is not a perturbation kwarg, expected one of {', '.join(DEFAULT_CONDITIONS)}")
-    pool = [DEFAULT_CONDITIONS[kwarg]]
-    for a in axes_for(rig).values():
-        if a.kwarg == kwarg:
-            pool += [a.condition(v) for v in a.grid if v != a.neutral and a.valid(v) is None]
-    for category in CATEGORIES.values():
-        if category.kwarg == kwarg:
-            pool += category.conditions
-    return tuple(pool)
-
-
-def draw_condition(
-    kwarg: str, rng, accept: Callable[[str | int], bool] | None = None, rig: str = DEFAULT_RIG
-) -> str | int:
-    """One value from `randomization_pool(kwarg)`, uniformly, using `rng` (anything with numpy's
-    `Generator.integers`). `accept` drops the values a particular env cannot take (`object-` textures
-    on a task with no single object)."""
-    pool = randomization_pool(kwarg, rig)
-    if accept is not None:
-        pool = tuple(c for c in pool if accept(c))
-    return pool[int(rng.integers(len(pool)))]
 
 
 def resolve(kwarg: str, value):

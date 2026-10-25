@@ -201,10 +201,6 @@ class TextureMixin:
         """The textures this env was built with; empty unless asked otherwise."""
         return self._texture
 
-    def _set_texture(self, condition) -> None:
-        """Take `condition` as this env's texture from the next reconfiguration (`randomize`)."""
-        self._texture = canonical_texture(condition)
-
     def _load_scene(self, options: dict):
         super()._load_scene(options)
         if not self._texture:

@@ -257,23 +257,6 @@ def test_the_fov_axis_is_the_zeds():
     # the neutral value is the default view, to the precision the keyword has
     neutral = canonical_viewpoint(fov.condition(fov.neutral), FR3_ZED_RIG)
     assert np.isclose(neutral.field_of_view, FR3_ZED_RIG.fov, atol=1e-5)
-    fovs = {
-        float(c.split("fov-")[1]) for c in axes.randomization_pool("viewpoint", "fr3_zed") if "fov-" in str(c)
-    }
-    assert fovs and all(42 <= f <= 62 for f in fovs), fovs
-    panda = {float(c.split("fov-")[1]) for c in axes.randomization_pool("viewpoint") if "fov-" in str(c)}
-    assert all(f >= 90 for f in panda)
-
-
-def test_randomized_viewpoint_draws_the_zeds_grid():
-    env = make_env("PushCube-v1.2", camera_view="wrist", viewpoint="randomize")
-    seen = set()
-    for seed in range(4):
-        env.reset(seed=seed)
-        seen.add(env.unwrapped.episode_perturbation["viewpoint"])
-        config = env.unwrapped.viewpoint
-        assert config.rig is FR3_ZED_RIG and (config.fov is None or 42 <= np.degrees(config.fov) <= 62)
-    env.close()
 
 
 TESTS = [
@@ -289,7 +272,6 @@ TESTS = [
     test_viewpoint_shifts_the_zed_and_not_the_panda,
     test_distractors_are_in_the_zeds_view,
     test_the_fov_axis_is_the_zeds,
-    test_randomized_viewpoint_draws_the_zeds_grid,
 ]
 
 if __name__ == "__main__":

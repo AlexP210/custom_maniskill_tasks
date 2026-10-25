@@ -1203,7 +1203,7 @@ class LightingMixin:
         return self._episode_lighting
 
     def _set_lighting(self, condition) -> None:
-        """Take `condition` as this env's lighting from the next reconfiguration (`randomize`)."""
+        """Take `condition` as this env's lighting from the next reconfiguration (`domain_randomization`)."""
         self._lighting = canonical_lighting(condition)
 
     def _warn_if_task_lights_itself(self) -> None:

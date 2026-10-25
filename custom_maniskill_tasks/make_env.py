@@ -26,7 +26,6 @@ from custom_maniskill_tasks.lighting import (
 )
 from custom_maniskill_tasks.corruption import (
     DEFAULT_CORRUPTION,
-    DEFAULT_CORRUPTION_CONFIG,
     canonical_corruption,
     supports_corruption,
 )
@@ -39,13 +38,16 @@ from custom_maniskill_tasks.table_material import (
 from custom_maniskill_tasks.texture import DEFAULT_TEXTURE, canonical_texture, supports_texture
 from custom_maniskill_tasks.viewpoint import (
     DEFAULT_VIEWPOINT,
-    DEFAULT_VIEWPOINT_CONFIG,
     canonical_viewpoint,
     check_viewpoint,
     rig_for_task,
     supports_viewpoint,
 )
-from custom_maniskill_tasks.randomize import is_randomize
+from custom_maniskill_tasks.domain_randomization import (
+    SPLITS as DOMAIN_RANDOMIZATION_SPLITS,
+    canonical_domain_randomization,
+    supports_domain_randomization,
+)
 from custom_maniskill_tasks.wrappers import FrameSkip, FrameStack, IgnoreTerminations
 
 TASKS_IN_USE = (
@@ -90,6 +92,8 @@ def make_env(
     distractors: int = 0,
     viewpoint: str | Sequence[str] = DEFAULT_VIEWPOINT,
     corruption: str | Sequence[str] = DEFAULT_CORRUPTION,
+    domain_randomization: Sequence[str] = (),
+    domain_randomization_split: str = "train",
     camera_resolution: int | None = DEFAULT_CAMERA_RESOLUTION,
     wrist_only: bool = True,
     focused_camera_uid: str = FOCUSED_CAMERA_UID,
@@ -178,15 +182,14 @@ def make_env(
         recorded into any trajectory collected through it; a default one is not passed at all,
         leaving existing configs' recorded metadata byte-identical to what they produced before
         these arguments existed.
-        Any of the six also takes `"randomize"` (e.g. `lighting="randomize"`): the env then draws its
-        condition afresh on every reset, uniformly from the runs `run_sweep.py` and
-        `run_ungraded.py` evaluate for that kwarg (the unperturbed scene, every non-neutral point
-        on its axes' grids, each of its named materials or patterns) -- see `randomize` and
-        `axes.randomization_pool`. The kwargs are independent, so randomizing several stacks one
-        draw from each. A randomized kwarg other than `corruption` rebuilds the scene on every reset
-        (`reconfiguration_freq=1`), and `viewpoint` needs `camera_view="wrist"`. `"randomize"`
-        itself is what is recorded as the env kwarg; `env.unwrapped.episode_perturbation` says what
-        the current episode drew.
+        domain_randomization: a list of appearance axes drawn afresh on every episode, any of
+            "lighting", "object_colour", "table_colour", "table_texture" and "table_material" --
+            see `domain_randomization`. Training draws from the central 80% of each continuous
+            range and from all but the held-out table materials; `domain_randomization_split=
+            "heldout"` draws from what training leaves out. Every reset rebuilds the scene
+            (`reconfiguration_freq=1`). An axis cannot also be set by its fixed kwarg
+            (`lighting`, `table_material`). `env.unwrapped.episode_randomization` says what the
+            current episode drew. Recorded as the env kwarg only when non-empty.
         camera_view: which camera the observations come from -- "default" (the task's own camera,
             also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
             workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).
@@ -220,23 +223,20 @@ def make_env(
             builds, ...
     """
     view = canonical_camera_view(camera_view)
-    randomized = {
-        name for name, value in (
-            ("lighting", lighting), ("texture", texture), ("table_material", table_material),
-            ("distractors", distractors), ("viewpoint", viewpoint), ("corruption", corruption),
-        ) if is_randomize(value)
-    }
-    # a randomized kwarg is drawn by the env on every reset, so here it stands for its default
-    lighting_config = DEFAULT_LIGHTING if "lighting" in randomized else canonical_lighting(lighting)
-    texture_spec = () if "texture" in randomized else canonical_texture(texture)
-    table_material_name = DEFAULT_TABLE_MATERIAL if "table_material" in randomized else canonical_table_material(table_material)
-    distractor_count = 0 if "distractors" in randomized else canonical_distractors(distractors)
+    lighting_config = canonical_lighting(lighting)
+    texture_spec = canonical_texture(texture)
+    table_material_name = canonical_table_material(table_material)
+    distractor_count = canonical_distractors(distractors)
     rig = rig_for_task(task_name)
-    viewpoint_config = (
-        canonical_viewpoint(None, rig) if "viewpoint" in randomized else canonical_viewpoint(viewpoint, rig)
-    )
-    corruption_config = DEFAULT_CORRUPTION_CONFIG if "corruption" in randomized else canonical_corruption(corruption)
-    if (not viewpoint_config.is_default or "viewpoint" in randomized) and view != "wrist":
+    viewpoint_config = canonical_viewpoint(viewpoint, rig)
+    corruption_config = canonical_corruption(corruption)
+    randomized_axes = canonical_domain_randomization(domain_randomization)
+    if domain_randomization_split not in DOMAIN_RANDOMIZATION_SPLITS:
+        raise ValueError(
+            f"Unknown domain_randomization_split {domain_randomization_split!r}, expected one of "
+            f"{', '.join(DOMAIN_RANDOMIZATION_SPLITS)}."
+        )
+    if not viewpoint_config.is_default and view != "wrist":
         raise ValueError(f"viewpoint={viewpoint!r} moves the wrist camera, but camera_view={camera_view!r}.")
 
     sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid, rig)
@@ -249,7 +249,7 @@ def make_env(
         # task's default, so the other views do not pay to render a camera nothing reads
         env_kwargs.setdefault("robot_uids", rig.wrist_robot_uid)
 
-    if lighting_config != DEFAULT_LIGHTING or "lighting" in randomized:
+    if lighting_config != DEFAULT_LIGHTING:
         if not supports_lighting(task_name):
             raise ValueError(
                 f"lighting={lighting!r} was asked for, but {task_name} is not one of this "
@@ -270,7 +270,7 @@ def make_env(
         ("viewpoint", viewpoint, not viewpoint_config.is_default, supports_viewpoint),
         ("corruption", corruption, not corruption_config.is_default, supports_corruption),
     ):
-        if not (asked or name in randomized):
+        if not asked:
             continue
         if not supported(task_name):
             raise ValueError(
@@ -284,6 +284,18 @@ def make_env(
             list(value) if isinstance(value, Sequence) and not isinstance(value, str) else value
         )
 
+    if randomized_axes:
+        if not supports_domain_randomization(task_name):
+            raise ValueError(
+                f"domain_randomization={list(randomized_axes)} was asked for, but {task_name} is not "
+                "one of this project's own task ids and its class takes no `domain_randomization` "
+                "kwarg. Use the corresponding -v1.1 id (see `TASKS_IN_USE`), which does."
+            )
+        # a plain list, so a list from a hydra ListConfig is recorded into env.spec.kwargs (and any
+        # trajectory json) as json
+        env_kwargs["domain_randomization"] = list(randomized_axes)
+        env_kwargs["domain_randomization_split"] = domain_randomization_split
+
     with camera_view_applied(view, task_name, wrist_only=wrist_only, rig=rig):
         env = gym.make(
             id=task_name,
@@ -295,9 +307,9 @@ def make_env(
             **env_kwargs,
         )
     check_camera_view(env, view, focused_camera_uid)
-    # a randomized kwarg is checked against what the env drew for its first episode
-    check_lighting(env, env.unwrapped.lighting if "lighting" in randomized else lighting_config)
-    check_viewpoint(env, env.unwrapped.viewpoint if "viewpoint" in randomized else viewpoint_config)
+    # a randomized lighting is checked against what the env drew for its first episode
+    check_lighting(env, env.unwrapped.lighting if randomized_axes else lighting_config)
+    check_viewpoint(env, viewpoint_config)
 
     if ignore_terminations:
         env = IgnoreTerminations(env)

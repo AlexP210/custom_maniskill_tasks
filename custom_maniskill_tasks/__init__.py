@@ -15,13 +15,18 @@ inserts its own observation adapter between `FrameSkip` and `FrameStack`).
 from custom_maniskill_tasks.axes import (
     AXES,
     NOT_GRADED,
-    RANDOMIZE,
     Axis,
     axis,
     conditions,
-    draw_condition,
     graded_kwargs,
-    randomization_pool,
+)
+from custom_maniskill_tasks.domain_randomization import (
+    AXES_RANDOMIZED,
+    HELDOUT_TABLE_MATERIALS,
+    RANGES as DOMAIN_RANDOMIZATION_RANGES,
+    DomainRandomizationMixin,
+    canonical_domain_randomization,
+    supports_domain_randomization,
 )
 from custom_maniskill_tasks.backends import backend_kwargs, resolve_sim_backend
 from custom_maniskill_tasks.cameras import (
@@ -76,7 +81,6 @@ from custom_maniskill_tasks.corruption import (
     corrupt_images,
 )
 from custom_maniskill_tasks.perturbations import PerturbationsMixin
-from custom_maniskill_tasks.randomize import RandomizationMixin, is_randomize
 from custom_maniskill_tasks.table_material import (
     DEFAULT_TABLE_MATERIAL,
     MATERIALS,
@@ -122,13 +126,14 @@ from custom_maniskill_tasks.wrappers import (
 )
 
 __all__ = [
+    "AXES_RANDOMIZED",
+    "HELDOUT_TABLE_MATERIALS",
+    "DOMAIN_RANDOMIZATION_RANGES",
+    "DomainRandomizationMixin",
+    "canonical_domain_randomization",
+    "supports_domain_randomization",
     "AXES",
     "NOT_GRADED",
-    "RANDOMIZE",
-    "RandomizationMixin",
-    "draw_condition",
-    "is_randomize",
-    "randomization_pool",
     "Axis",
     "axis",
     "conditions",

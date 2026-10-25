@@ -87,26 +87,39 @@ same scene without being told. A default one is not passed at all, so existing r
 is unchanged. Asking for any on a stock `-v1` id raises rather than silently doing nothing, as does
 an unknown keyword. Keywords stack with `+` (except `distractors`, which is a count).
 
-### Randomizing
+### Domain randomization
 
-Any of the six also takes `"randomize"`, which draws the condition afresh on every reset from what
-the evaluation runs: for each kwarg, the unperturbed scene, every non-neutral point on its axes'
-grids in `axes.py` (what `run_sweep.py` runs) and every named material or pattern in `CATEGORIES`
-(what `run_ungraded.py` runs), each equally likely (`axes.randomization_pool(kwarg)`).
+`domain_randomization` takes a list of axes, and each episode then draws a condition from every
+axis in it, independently (see `domain_randomization.py`):
+
+| axis | drawn every episode |
+| --- | --- |
+| `lighting` | the scene's brightness (0.25x to 8x, log), the key light's direction (default to `side`) and the colour temperature (2700 K to 12000 K) |
+| `object_colour` | an offset to each of the object's R, G and B (+-0.4) |
+| `table_colour` | a gain on each of the table's R, G and B (0.6 to 1.4) and a brightness (0.4 to 1.6) |
+| `table_texture` | a scale (0.5x to 2x), shear, rotation (+-45 degrees) and translation of the table's texture |
+| `table_material` | the table's material: wood or one of `table_material`'s |
 
 ```python
 env = make_env("LiftPegUpright-v1.1", camera_view="wrist",
-               lighting="randomize", viewpoint="randomize", corruption="randomize")
+               domain_randomization=["lighting", "object_colour", "table_material"])
 env.reset(seed=3)
-env.unwrapped.episode_perturbation   # {'lighting': 'warm-set-0.4', 'viewpoint': 'default', 'corruption': 'blur-0.8'}
+env.unwrapped.episode_randomization   # {'lighting': {'brightness': 1.7, 'direction': 0.45, 'temperature': 0.14}, ...}
 ```
 
-The kwargs are independent, so randomizing several stacks one draw from each (the evaluation runs
-one perturbation at a time); one left at a fixed value stays fixed. The draw is seeded by the reset
-seed, so the same `reset(seed=...)` gives the same condition, and is shared by all parallel envs.
-Everything but `corruption` changes what is built, so a randomized one makes the env reconfigure on
-every reset (`reconfiguration_freq=1`, slower, and every env must reset together). `viewpoint` needs
-`camera_view="wrist"`. See `randomize.py`.
+Part of each axis is held out so a policy can be evaluated on conditions it never trained on.
+`domain_randomization_split="train"` (the default) draws a continuous parameter from the central
+80% of its range and the table material from all but `HELDOUT_TABLE_MATERIALS` (`glass`, `gold`);
+`"heldout"` draws every parameter from what that leaves: the outer 10% at each end of a range
+centred on its neutral value, the far 20% of the key light's direction, which runs from the default
+to `side`; and only the held-out materials.
+
+The draw is seeded by the reset seed, so the same `reset(seed=...)` gives the same condition, and
+is shared by all parallel envs (the table's material is shared between them). A draw changes what
+is built, so the env reconfigures on every reset (`reconfiguration_freq=1`, slower, and every env
+must reset together). `lighting` and `table_colour` go through `lighting`'s own machinery, so an
+axis cannot also be fixed by its kwarg (`lighting=`, `table_material=`): asking for both raises, as
+does `object_colour` on a task with no single object of interest (PokeCube).
 
 `perturbation_sheet.py` renders any combination side by side, wrist camera and third-person view,
 for looking at them:
@@ -387,14 +400,14 @@ no mount model. The ZED SDK's rectified HD720 left image has HFOV 82.504 degrees
 720 x 720 crop of that rectified frame and resize it to 224 x 224**; that is a square pinhole
 image with the 720 rows' 52.517 degree field of view on both axes (`fx = fy` = 227 px), which is what is
 rendered. Any other real-side preprocessing is not what this simulates. No photometric or
-camera-jitter randomization is applied: the existing `lighting`, `corruption` and `viewpoint`
-kwargs are the only perturbations.
+camera-jitter randomization is applied beyond what `domain_randomization` and the `lighting`,
+`corruption` and `viewpoint` kwargs ask for.
 
 **What differs from `-v1.1` in the perturbation machinery.** The camera is a `WristRig`
 (`cameras.py`): `ViewpointConfig` carries the rig it was parsed for, so the viewpoint geometry, the
 distractor visibility test and the nominal camera pose all follow the robot. `viewpoint.fov`'s axis
 is re-centred on 52.517 (grid 42 to 62) for the ZED (`axes.RIG_AXES`, `axes.axis(name, "fr3_zed")`),
-and `viewpoint="randomize"` draws from that. Two things to know:
+Two things to know:
 
 - the ZED sees only about 16 x 21 cm of table at reset, so `distractors` are always put inside
   the view but cannot be kept clear of the task's own objects and of each other as on the Panda (one
