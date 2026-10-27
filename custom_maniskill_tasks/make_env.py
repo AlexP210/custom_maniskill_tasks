@@ -183,8 +183,9 @@ def make_env(
         leaving existing configs' recorded metadata byte-identical to what they produced before
         these arguments existed.
         domain_randomization: a list of appearance axes drawn afresh on every episode, any of
-            "lighting", "object_colour", "table_colour", "table_texture" and "table_material" --
-            see `domain_randomization`. Training draws from the central 80% of each continuous
+            "lighting", "object_colour", "table_colour", "table_texture", "table_material",
+            "table_visual_material" and "object_visual_material" -- see `domain_randomization`.
+            Training draws from the milder 80% of each continuous
             range and from all but the held-out table materials; `domain_randomization_split=
             "heldout"` draws from what training leaves out. Every reset rebuilds the scene
             (`reconfiguration_freq=1`). An axis cannot also be set by its fixed kwarg

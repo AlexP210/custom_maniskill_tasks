@@ -13,6 +13,12 @@ each switched-on axis independently:
 | `table_colour` | a gain on each of the table's R, G and B, and a brightness |
 | `table_texture` | a scale, shear, rotation and translation of the table's texture |
 | `table_material` | the table's material, among `default` (wood) and `table_material.MATERIALS` |
+| `table_visual_material` | how the table reflects light: its roughness, metallic, specular and bump |
+| `object_visual_material` | how the manipulated object reflects light: its gloss and metallic |
+
+The two `*_visual_material` axes change the surface, not the colour: they edit the render
+material the scene already has (the wood, a `table_material` preset, a tinted table, a recoloured
+object) rather than replacing it, so they compose with every other axis.
 
 Training and evaluation draw from disjoint parts of each axis (`domain_randomization_split`):
 
@@ -66,7 +72,10 @@ from custom_maniskill_tasks.lighting import (
 from custom_maniskill_tasks.table_material import DEFAULT_TABLE_MATERIAL, MATERIALS, canonical_table_material
 from custom_maniskill_tasks.texture import _render_parts
 
-AXES_RANDOMIZED = ("lighting", "object_colour", "table_colour", "table_texture", "table_material")
+AXES_RANDOMIZED = (
+    "lighting", "object_colour", "table_colour", "table_texture", "table_material",
+    "table_visual_material", "object_visual_material",
+)
 """The names `domain_randomization` takes."""
 
 SPLITS = ("train", "heldout")
@@ -140,6 +149,16 @@ RANGES: dict[str, dict[str, Range]] = {
         "shift_x": Range(-0.5, 0.5),
         "shift_y": Range(-0.5, 0.5),
     },
+    "table_visual_material": {
+        "roughness": Range(-0.5, 0.5),
+        "metallic_reduction": Range(0.0, 1.0, two_sided=False),
+        "specular": Range(0.0, 1.0, two_sided=False),
+        "bump": Range(0.0, 2.0),
+    },
+    "object_visual_material": {
+        "gloss": Range(0.0, 1.0, two_sided=False),
+        "metallic": Range(0.0, 1.0, two_sided=False),
+    },
 }
 """Every continuous parameter's range, by axis. In the units of the axes it comes from:
 
@@ -152,7 +171,25 @@ RANGES: dict[str, dict[str, Range]] = {
   multiplies all three on top.
 - `table_texture`: `scale` multiplies the texture's size, `shear` is the x-shear of the texture
   plane, `rotation` is in degrees, and `shift_x`/`shift_y` are in periods of the texture (it tiles,
-  so a shift of one period is no shift)."""
+  so a shift of one period is no shift).
+- `table_visual_material`: `roughness` is added to the table's roughness (-0.5 is near-mirror
+  wood, +0.5 near-fully matte); `metallic_reduction` is the fraction of its metallic taken away
+  (the stock wood's metallic map is 1.0 everywhere, so 0 is the stock look and 1 a plain
+  dielectric); `specular` is added to its specular, which shows only where the surface is not
+  metallic; `bump` multiplies the strength of its normal map (0 flattens the grain, 2 doubles
+  it). Each acts on the map where the table has one and on the scalar where it does not, which
+  is what makes it work on the `table_material` presets too: sapien ignores the scalar of any
+  property that has a map.
+- `object_visual_material`: `gloss` is taken off the object's roughness (stock objects are
+  roughness 1.0, fully matte, so 0 is the stock look; the highlight is brightest near 0.8 and
+  shrinks to a point towards 1, a mirror with no environment to reflect); `metallic` is added to
+  its metallic (0 on the stock objects), which darkens it.
+
+Every neutral value is the stock scene, and lies in the training part (a neutral table edit
+re-uploads the maps, which renders within ~0.8/255 of the stock image on average). Not axes,
+because they do nothing visible in the rasterizer the cameras render with: transmission (drawn
+opaque) and the object's specular (no visible change at any value, with its roughness at 1).
+The table's specular does show, but only where `metallic_reduction` has made the wood less metallic."""
 
 
 def canonical_domain_randomization(axes: str | Sequence[str] | None) -> tuple[str, ...]:
@@ -291,6 +328,111 @@ def _apply_table_texture(env, condition: dict[str, float]) -> None:
                 part.material.base_color_texture = texture
 
 
+# Which channel of a loaded map holds a property: the glTF convention, which the stock table's glb
+# uses (one occlusion-roughness-metallic image, roughness in G, metallic in B; R is 255). A texture
+# made here is NOT read the same way -- measured, sapien takes its roughness from R, so a copy of
+# the stock map with its pixels untouched renders as roughness 1 everywhere. So the edited value is
+# read from its glTF channel and written to R, G and B of the new map, which is right whichever one
+# sapien samples.
+ROUGHNESS_CHANNEL = 1
+METALLIC_CHANNEL = 2
+
+
+def _remapped_channels(texture, remap):
+    """A new texture whose pixels are `remap(pixels)` (uint8 (h, w, 4) in, float out, clipped and
+    rounded back to uint8), in the same format and sampling as `texture`. A new texture rather than
+    an edit of this one: sapien caches a model's textures for the whole process (see
+    `lighting._tint_table`)."""
+    import sapien
+
+    pixels = texture.download()
+    out = np.clip(np.round(remap(pixels.astype(np.float64))), 0, 255).astype(np.uint8)
+    return sapien.render.RenderTexture2D(
+        out, texture.format, texture.mipmap_levels, texture.filter_mode, texture.address_mode, texture.is_srgb
+    )
+
+
+def _material_edits(material, cache: dict, roughness_offset=0.0, metallic_scale=1.0, metallic_offset=0.0,
+                    specular_offset=0.0, bump=1.0) -> dict:
+    """{attribute: value} that applies the edits to `material`, computed from its current state.
+
+    Roughness and metallic are edited in their map where there is one (sapien ignores the scalar
+    then) and in the scalar otherwise; a map shared by several materials is remapped once, through
+    `cache`, which is keyed by the original texture."""
+
+    def remapped(texture, key, remap):
+        if (id(texture), key) not in cache:
+            cache[id(texture), key] = _remapped_channels(texture, remap)
+        return cache[id(texture), key]
+
+    def channel(index, fn):
+        def remap(pixels):
+            pixels[..., :3] = (fn(pixels[..., index] / 255.0) * 255.0)[..., None]
+            return pixels
+        return remap
+
+    rough = lambda r: np.clip(r + roughness_offset, 0.0, 1.0)
+    metal = lambda m: np.clip(m * metallic_scale + metallic_offset, 0.0, 1.0)
+    edits = {"specular": float(np.clip(material.specular + specular_offset, 0.0, 1.0))}
+    if material.roughness_texture is not None:
+        edits["roughness_texture"] = remapped(
+            material.roughness_texture, ("roughness", roughness_offset), channel(ROUGHNESS_CHANNEL, rough))
+    else:
+        edits["roughness"] = float(rough(material.roughness))
+    if material.metallic_texture is not None:
+        edits["metallic_texture"] = remapped(
+            material.metallic_texture, ("metallic", metallic_scale, metallic_offset), channel(METALLIC_CHANNEL, metal))
+    else:
+        edits["metallic"] = float(metal(material.metallic))
+    if material.normal_texture is not None and bump != 1.0:
+        def flatten(pixels):  # tangent-space x and y about their zero, 127.5; z is left to the shader
+            pixels[..., :2] = 127.5 + (pixels[..., :2] - 127.5) * bump
+            return pixels
+        edits["normal_texture"] = remapped(material.normal_texture, ("bump", bump), flatten)
+    return edits
+
+
+def _apply_visual_material(actor, **edit) -> None:
+    """Apply `_material_edits(**edit)` to every render part of `actor`, in every parallel env. Every
+    edit is worked out from the original material before any is written, so a material shared
+    between parts or envs is edited once rather than once per part."""
+    cache = {}
+    parts = _render_parts(actor)
+    edits = [(part.material, _material_edits(part.material, cache, **edit)) for part in parts]
+    for material, values in edits:
+        for attribute, value in values.items():
+            setattr(material, attribute, value)
+
+
+def apply_table_visual_material(env, condition: dict[str, float]) -> None:
+    """The table's surface as `table_visual_material`'s drawn `condition` says (see `RANGES`)."""
+    table_scene = getattr(env, "table_scene", None)
+    if table_scene is None:
+        raise ValueError(f"{type(env).__name__} has no `table_scene`, so there is no table material to change.")
+    _apply_visual_material(
+        table_scene.table,
+        roughness_offset=condition["roughness"],
+        metallic_scale=1.0 - condition["metallic_reduction"],
+        specular_offset=condition["specular"],
+        bump=condition["bump"],
+    )
+
+
+def apply_object_visual_material(env, condition: dict[str, float]) -> None:
+    """The object of interest's surface as `object_visual_material`'s drawn `condition` says."""
+    attribute = getattr(env, "object_of_interest", None)
+    if attribute is None:
+        raise ValueError(
+            f"{type(env).__name__} has no single object of interest, so 'object_visual_material' has no "
+            "object to change."
+        )
+    _apply_visual_material(
+        getattr(env, attribute),
+        roughness_offset=-condition["gloss"],
+        metallic_offset=condition["metallic"],
+    )
+
+
 class DomainRandomizationMixin:
     """Gives a task the `domain_randomization` kwarg, and `domain_randomization_split` to say
     whether the draws are training or held-out ones. Mixed in ahead of `LightingMixin`, so it sees
@@ -324,11 +466,12 @@ class DomainRandomizationMixin:
                 f"domain_randomization has 'table_material', which draws the material every "
                 f"episode, but table_material={kwargs['table_material']!r} was also passed."
             )
-        if "object_colour" in chosen and getattr(type(self), "object_of_interest", None) is None:
-            raise ValueError(
-                f"{type(self).__name__} has no single object of interest, so 'object_colour' has no "
-                "object to recolour."
-            )
+        for axis in ("object_colour", "object_visual_material"):
+            if axis in chosen and getattr(type(self), "object_of_interest", None) is None:
+                raise ValueError(
+                    f"{type(self).__name__} has no single object of interest, so {axis!r} has no "
+                    "object to change."
+                )
         if chosen:
             frequency = kwargs.setdefault("reconfiguration_freq", 1)
             if frequency != 1:
@@ -377,6 +520,11 @@ class DomainRandomizationMixin:
             _apply_object_colour(self, [drawn["object_colour"][c] for c in "rgb"])
         if "table_texture" in drawn:
             _apply_table_texture(self, drawn["table_texture"])
+        # after the table's material, tint and texture (all applied by now), which these keep
+        if "table_visual_material" in drawn:
+            apply_table_visual_material(self, drawn["table_visual_material"])
+        if "object_visual_material" in drawn:
+            apply_object_visual_material(self, drawn["object_visual_material"])
 
 
 def supports_domain_randomization(task_name: str) -> bool:

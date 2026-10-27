@@ -99,6 +99,8 @@ axis in it, independently (see `domain_randomization.py`):
 | `table_colour` | a gain on each of the table's R, G and B (0.6 to 1.4) and a brightness (0.4 to 1.6) |
 | `table_texture` | a scale (0.5x to 2x), shear, rotation (+-45 degrees) and translation of the table's texture |
 | `table_material` | the table's material: wood or one of `table_material`'s |
+| `table_visual_material` | how the table reflects light: a roughness offset (+-0.5), how much of its metallic is taken away (0 to 1; the stock wood is fully metallic), a specular (0 to 1) and the strength of its normal map (0 to 2x) |
+| `object_visual_material` | how the object reflects light: a gloss taken off its roughness (0 to 1; stock objects are fully matte) and a metallic (0 to 1) |
 
 ```python
 env = make_env("LiftPegUpright-v1.1", camera_view="wrist",
@@ -120,6 +122,11 @@ is built, so the env reconfigures on every reset (`reconfiguration_freq=1`, slow
 must reset together). `lighting` and `table_colour` go through `lighting`'s own machinery, so an
 axis cannot also be fixed by its kwarg (`lighting=`, `table_material=`): asking for both raises, as
 does `object_colour` on a task with no single object of interest (PokeCube).
+
+The two `*_visual_material` axes edit the surface the scene already has (the wood, a material
+preset, a tinted table, a recoloured object) rather than replacing it, so they compose with every
+other axis. `domain_randomization_sheet.py <axis> ...` renders what each parameter of an axis does
+and where its training / held-out split falls (`lift_peg_dr_{scene,wrist}_<axis>.png`).
 
 `perturbation_sheet.py` renders any combination side by side, wrist camera and third-person view,
 for looking at them:
