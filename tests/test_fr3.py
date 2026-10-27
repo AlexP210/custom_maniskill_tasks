@@ -15,9 +15,9 @@ import torch
 from transforms3d.quaternions import mat2quat, quat2mat
 
 import custom_maniskill_tasks  # noqa: F401  (registers the ids under test)
-from custom_maniskill_tasks import FR3_TASKS, FR3_ZED_RIG, PANDA_RIG, axes, make_env
+from custom_maniskill_tasks import FR3_TASKS, FR3_ZED_RIG, PANDA_RIG, make_env
 from custom_maniskill_tasks import fr3
-from custom_maniskill_tasks.viewpoint import canonical_viewpoint, wrist_camera_world_pose
+from custom_maniskill_tasks.viewpoint import ViewpointConfig, wrist_camera_world_pose
 from mani_skill.utils.assets import is_data_source_downloaded
 from mani_skill.utils.registration import REGISTERED_ENVS
 
@@ -197,7 +197,7 @@ def test_the_nominal_pose_is_where_the_camera_is_at_reset():
     env = make_env("PushCube-v1.2", camera_view="wrist", robot_init_qpos_noise=0.0)
     env.reset(seed=5)
     pose = env.unwrapped._sensors["hand_camera"].camera.global_pose
-    position, rotation = wrist_camera_world_pose(canonical_viewpoint("default", FR3_ZED_RIG))
+    position, rotation = wrist_camera_world_pose(ViewpointConfig(rig=FR3_ZED_RIG))
     assert np.allclose(pose.p[0].cpu().numpy(), position, atol=2e-3), (pose.p, position)
     built = quat2mat(pose.q[0].cpu().numpy())
     assert np.allclose(built, rotation, atol=1e-2), (built, rotation)
@@ -216,47 +216,34 @@ def test_the_wrist_robot_is_chosen_by_the_view():
 
 
 # --------------------------------------------------------------------------- #
-# viewpoint, distractors, axes
+# viewpoint
 # --------------------------------------------------------------------------- #
 def test_viewpoint_shifts_the_zed_and_not_the_panda():
-    env = make_env("PushCube-v1.2", camera_view="wrist", viewpoint="back-2+pitch-up-5+fov-60")
-    env.reset(seed=0)  # make_env already checked the built pose and fov against the config
-    config = env.unwrapped.viewpoint
-    assert config.rig is FR3_ZED_RIG and np.isclose(np.degrees(config.field_of_view), 60)
-    assert np.isclose(np.degrees(canonical_viewpoint("default", FR3_ZED_RIG).field_of_view), 52.517, atol=1e-3)
-    assert np.isclose(np.degrees(canonical_viewpoint("default").field_of_view), 108), "the Panda's is untouched"
-    assert canonical_viewpoint("default", FR3_ZED_RIG).is_default
+    config = {"viewpoint": {"forward": -2, "pitch": 5, "fov": 50}}
+    env = make_env("PushCube-v1.2", camera_view="wrist", perturbations=config)
+    env.reset(seed=0)  # make_env already checked the built pose and fov against the draw
+    drawn = env.unwrapped.episode_perturbations["viewpoint"]
+    assert drawn["fov"] == 50 and drawn["forward"] == -2
+    shifted = env.unwrapped._sensors["hand_camera"]
+    assert np.isclose(np.degrees(shifted.config.fov), 50, atol=1e-3), "the ZED's fov was set, in degrees"
     env.close()
+    # the fov range follows the rig: 108 is the Panda's own, and outside the ZED's
+    try:
+        make_env("PushCube-v1.2", camera_view="wrist", perturbations={"viewpoint": {"fov": 108}})
+    except ValueError as error:
+        assert "outside its range" in str(error)
+    else:
+        raise AssertionError("fov=108 was accepted on the ZED")
+    assert np.isclose(np.degrees(ViewpointConfig(rig=FR3_ZED_RIG).field_of_view), 52.517, atol=1e-3)
+    assert np.isclose(np.degrees(ViewpointConfig().field_of_view), 108), "the Panda's is untouched"
+    assert ViewpointConfig(rig=FR3_ZED_RIG).is_default
 
 
-def test_distractors_are_in_the_zeds_view():
-    """Every distractor is inside the view. What does *not* hold on this camera is the clearance
-    `test_tasks` checks on the Panda's: the ZED sees about 16 x 21 cm of table, so the objects
-    cannot all be kept clear of the task's own and each other (one distractor overlaps in about 4
-    of 10 resets), and placement falls back to the roomiest visible spot, as it is documented to."""
-    task = "PickCube-v1.2"
-    if not _has_assets("PickCube-v1.2") or not is_data_source_downloaded("ycb"):
-        print("      (skipped: YCB assets missing)")
-        return
-    sys.path.insert(0, __file__.rsplit("/", 1)[0])
-    from custom_maniskill_tasks.viewpoint import in_wrist_view
-
-    env = make_env(task, camera_view="wrist", distractors=3)
-    for seed in range(3):
-        env.reset(seed=seed)
-        for actor in env.unwrapped.distractors.values():
-            xy = actor.pose.p[0, :2].cpu().numpy()
-            assert in_wrist_view(np.array([[*xy, 0.0], [*xy, 0.02]]), env.unwrapped.viewpoint).all(), seed
+def test_the_neutral_fov_is_the_zeds_own():
+    env = make_env("PushCube-v1.2", camera_view="wrist", perturbations={"viewpoint": {"fov": 52.517, "pitch": 3}})
+    env.reset(seed=0)
+    assert np.isclose(np.degrees(env.unwrapped._sensors["hand_camera"].config.fov), 52.517, atol=1e-3)
     env.close()
-
-
-def test_the_fov_axis_is_the_zeds():
-    fov = axes.axis("viewpoint.fov", "fr3_zed")
-    assert fov.neutral == 52.517 and fov is not axes.axis("viewpoint.fov")
-    assert axes.axis("viewpoint.fov").neutral == 108, "the Panda's axis is unchanged"
-    # the neutral value is the default view, to the precision the keyword has
-    neutral = canonical_viewpoint(fov.condition(fov.neutral), FR3_ZED_RIG)
-    assert np.isclose(neutral.field_of_view, FR3_ZED_RIG.fov, atol=1e-5)
 
 
 TESTS = [
@@ -270,8 +257,7 @@ TESTS = [
     test_the_nominal_pose_is_where_the_camera_is_at_reset,
     test_the_wrist_robot_is_chosen_by_the_view,
     test_viewpoint_shifts_the_zed_and_not_the_panda,
-    test_distractors_are_in_the_zeds_view,
-    test_the_fov_axis_is_the_zeds,
+    test_the_neutral_fov_is_the_zeds_own,
 ]
 
 if __name__ == "__main__":

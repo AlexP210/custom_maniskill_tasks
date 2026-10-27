@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import gymnasium as gym
+import numpy as np
 
 import mani_skill.envs  # noqa: F401  (registers the task ids with gymnasium)
 
@@ -17,37 +18,10 @@ from custom_maniskill_tasks.cameras import (
     canonical_camera_view,
     check_camera_view,
 )
-from custom_maniskill_tasks.lighting import (
-    DEFAULT_LIGHTING,
-    DEFAULT_LIGHTING_PRESET,
-    canonical_lighting,
-    check_lighting,
-    supports_lighting,
-)
-from custom_maniskill_tasks.corruption import (
-    DEFAULT_CORRUPTION,
-    canonical_corruption,
-    supports_corruption,
-)
-from custom_maniskill_tasks.distractors import canonical_distractors, supports_distractors
-from custom_maniskill_tasks.table_material import (
-    DEFAULT_TABLE_MATERIAL,
-    canonical_table_material,
-    supports_table_material,
-)
-from custom_maniskill_tasks.texture import DEFAULT_TEXTURE, canonical_texture, supports_texture
-from custom_maniskill_tasks.viewpoint import (
-    DEFAULT_VIEWPOINT,
-    canonical_viewpoint,
-    check_viewpoint,
-    rig_for_task,
-    supports_viewpoint,
-)
-from custom_maniskill_tasks.domain_randomization import (
-    SPLITS as DOMAIN_RANDOMIZATION_SPLITS,
-    canonical_domain_randomization,
-    supports_domain_randomization,
-)
+from custom_maniskill_tasks.lighting import check_lighting
+from custom_maniskill_tasks.perturbation_classes import resolve_perturbations
+from custom_maniskill_tasks.perturbation_mixin import check_perturbations, supports_perturbations
+from custom_maniskill_tasks.viewpoint import rig_for_task
 from custom_maniskill_tasks.wrappers import FrameSkip, FrameStack, IgnoreTerminations
 
 TASKS_IN_USE = (
@@ -86,14 +60,7 @@ def make_env(
     control_mode: str | None = "pd_ee_delta_pos",
     num_envs: int = 1,
     camera_view: str = "default",
-    lighting: str | Sequence[str] | dict = DEFAULT_LIGHTING_PRESET,
-    texture: str | Sequence[str] = DEFAULT_TEXTURE,
-    table_material: str = DEFAULT_TABLE_MATERIAL,
-    distractors: int = 0,
-    viewpoint: str | Sequence[str] = DEFAULT_VIEWPOINT,
-    corruption: str | Sequence[str] = DEFAULT_CORRUPTION,
-    domain_randomization: Sequence[str] = (),
-    domain_randomization_split: str = "train",
+    perturbations: Mapping[str, Any] | None = None,
     camera_resolution: int | None = DEFAULT_CAMERA_RESOLUTION,
     wrist_only: bool = True,
     focused_camera_uid: str = FOCUSED_CAMERA_UID,
@@ -130,67 +97,17 @@ def make_env(
             means "whatever the task id already defaults to" and is not forwarded, since
             `gym.make(control_mode=None)` would override a registration default (the `-v1.1` ids
             carry one) rather than defer to it.
-        lighting: which lighting and colour condition the scene is rendered under -- "default"
-            (the stock scene every dataset here was recorded with), or one or more of the
-            following joined with "+" (e.g. "very-dim+very-warm+side"):
-
-            - a preset from `LIGHTING_PRESETS`: "dim", "bright", "warm", "cool", "side" and
-              "shadows", each of the first four also with a more extreme "very-<preset>"
-              sibling, and "random", which draws one condition per parallel env;
-            - "bright-set-<ambient>-<lights>" to set the ambient and both lights' levels outright
-              (e.g. "bright-set-0.45-1.5"), "side-set-<amount>" to turn the key light that
-              fraction (0 to 1) of the way from "default"'s direction to "side"'s,
-              "warm-set-<amount>" / "cool-set-<amount>" to tint the lights that fraction of the
-              way along the blackbody curve from 6500 K to 2700 K / 12000 K (and past 1, up to
-              1.6: about 2000 K / 24400 K);
-            - "dark-table" / "very-dark-table" or "table-set-<scale>" / "table-set-<r>-<g>-<b>"
-              to recolour the table and leave the lights alone (e.g. "table-set-0.4");
-            - "object-hue-<degrees>" to turn the task objects' colours that far round the hue
-              wheel (e.g. "object-hue-60");
-            - "domain-randomization" (or a list of preset names) to draw a fresh condition per
-              parallel env on every reset -- one of `DOMAIN_RANDOMIZATION_PRESETS` (or of the
-              list) at a severity uniform between the default and that preset, see
-              `LightingMixin`.
-
-            A config dict is also accepted for a one-off condition. Only the project's own
-            `-v1.1` ids support it. It is a real env kwarg, so a non-default condition is
-            recorded into any trajectory collected through it; a "default" one is not passed at
-            all, leaving existing configs' recorded metadata byte-identical to what they
-            produced before this argument existed.
-        texture: patterns on the table and objects -- "default" for none, or one or more
-            `<target>-<pattern>[-<n>]` joined with "+" (e.g. "table-checker+object-stripes",
-            "cube-dots"): a target of `table`, `object` (the task's object of interest),
-            `distractors` or an actor's name, and a pattern of `checker`, `stripes`, `dots` or
-            `noise`. See `texture`.
-        table_material: the table's look -- "default" (wood), "marble", "glass", "metal",
-            "gold", "concrete" or "rubber". Visual only: friction and contact are unchanged. See
-            `table_material`.
-        distractors: how many YCB objects (0 to 8) to scatter on the table, wholly inside the wrist
-            camera's view and clear of the task's own objects. Needs the YCB assets. See
-            `distractors`.
-        viewpoint: where the wrist camera is -- "default" for where the robot mounts it, or one or
-            more of `left|right|up|down|forward|back-<cm>`,
-            `pitch-up|pitch-down|yaw-left|yaw-right|roll-left|roll-right-<degrees>` and
-            `fov-<degrees>` joined with "+" (e.g. "back-3+pitch-up-5"). Needs
-            `camera_view="wrist"`. See `viewpoint`.
-        corruption: how the camera images are degraded -- "default" for not at all, or one or
-            more of `blur-<sigma>`, `noise-<std>` and `lowres-<factor>` joined with "+" (e.g.
-            "blur-2+noise-0.05"). See `corruption`.
-
-        Each of `lighting`, `texture`, `table_material`, `distractors`, `viewpoint` and `corruption` is a real env
-        kwarg of the project's own `-v1.1` ids, independent of the others, so a non-default one is
-        recorded into any trajectory collected through it; a default one is not passed at all,
-        leaving existing configs' recorded metadata byte-identical to what they produced before
-        these arguments existed.
-        domain_randomization: a list of appearance axes drawn afresh on every episode, any of
-            "lighting", "object_colour", "table_colour", "table_texture", "table_material",
-            "table_visual_material" and "object_visual_material" -- see `domain_randomization`.
-            Training draws from the milder 80% of each continuous
-            range and from all but the held-out table materials; `domain_randomization_split=
-            "heldout"` draws from what training leaves out. Every reset rebuilds the scene
-            (`reconfiguration_freq=1`). An axis cannot also be set by its fixed kwarg
-            (`lighting`, `table_material`). `env.unwrapped.episode_randomization` says what the
-            current episode drew. Recorded as the env kwarg only when non-empty.
+        perturbations: how the scene differs from the stock one, as {class: spec} -- see
+            `perturbation_classes`. The classes are `lighting`, `object_colour`, `table_colour`,
+            `table_texture`, `table_material` and `viewpoint` (which needs `camera_view="wrist"`),
+            each a group of aspects. A class is "default" (every aspect neutral), "randomize-train"
+            / "randomize-evaluation" / "randomize-full" (every aspect drawn afresh each episode
+            from that part of its range), or a dict of aspects, each of which is "default", a
+            number inside its range, or one of those "randomize-*" strings; aspects not named are
+            default, and so are classes not named. Anything randomized rebuilds the scene on
+            every reset (`reconfiguration_freq=1`). `env.unwrapped.episode_perturbations` says
+            what the current episode drew. Recorded as the env kwarg, in canonical form, only
+            when something is not default.
         camera_view: which camera the observations come from -- "default" (the task's own camera,
             also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
             workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).
@@ -224,21 +141,12 @@ def make_env(
             builds, ...
     """
     view = canonical_camera_view(camera_view)
-    lighting_config = canonical_lighting(lighting)
-    texture_spec = canonical_texture(texture)
-    table_material_name = canonical_table_material(table_material)
-    distractor_count = canonical_distractors(distractors)
     rig = rig_for_task(task_name)
-    viewpoint_config = canonical_viewpoint(viewpoint, rig)
-    corruption_config = canonical_corruption(corruption)
-    randomized_axes = canonical_domain_randomization(domain_randomization)
-    if domain_randomization_split not in DOMAIN_RANDOMIZATION_SPLITS:
+    perturbation_config = resolve_perturbations(perturbations, fov_degrees=float(np.degrees(rig.fov)))
+    if "viewpoint" in perturbation_config.active and view != "wrist":
         raise ValueError(
-            f"Unknown domain_randomization_split {domain_randomization_split!r}, expected one of "
-            f"{', '.join(DOMAIN_RANDOMIZATION_SPLITS)}."
+            f"perturbations has 'viewpoint', which moves the wrist camera, but camera_view={camera_view!r}."
         )
-    if not viewpoint_config.is_default and view != "wrist":
-        raise ValueError(f"viewpoint={viewpoint!r} moves the wrist camera, but camera_view={camera_view!r}.")
 
     sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid, rig)
     sensor_configs.update(env_kwargs.pop("sensor_configs", {}) or {})
@@ -250,52 +158,16 @@ def make_env(
         # task's default, so the other views do not pay to render a camera nothing reads
         env_kwargs.setdefault("robot_uids", rig.wrist_robot_uid)
 
-    if lighting_config != DEFAULT_LIGHTING:
-        if not supports_lighting(task_name):
+    if not perturbation_config.is_default:
+        if not supports_perturbations(task_name):
             raise ValueError(
-                f"lighting={lighting!r} was asked for, but {task_name} is not one of this "
-                f"project's own task ids and its class takes no `lighting` kwarg. Use the "
-                f"corresponding -v1.1 id (see `TASKS_IN_USE`), which does."
-            )
-        # a plain list, so a domain-randomization list from a hydra ListConfig is recorded into
-        # env.spec.kwargs (and any trajectory json) as json
-        env_kwargs["lighting"] = (
-            list(lighting) if isinstance(lighting, Sequence) and not isinstance(lighting, str)
-            else lighting
-        )
-    for name, value, asked, supported in (
-        ("texture", texture, bool(texture_spec), supports_texture),
-        ("table_material", table_material, table_material_name != DEFAULT_TABLE_MATERIAL,
-         supports_table_material),
-        ("distractors", distractors, distractor_count > 0, supports_distractors),
-        ("viewpoint", viewpoint, not viewpoint_config.is_default, supports_viewpoint),
-        ("corruption", corruption, not corruption_config.is_default, supports_corruption),
-    ):
-        if not asked:
-            continue
-        if not supported(task_name):
-            raise ValueError(
-                f"{name}={value!r} was asked for, but {task_name} is not one of this project's own "
-                f"task ids and its class takes no `{name}` kwarg. Use the corresponding -v1.1 id "
-                "(see `TASKS_IN_USE`), which does."
-            )
-        # a plain list, so a list from a hydra ListConfig is recorded into env.spec.kwargs (and any
-        # trajectory json) as json
-        env_kwargs[name] = (
-            list(value) if isinstance(value, Sequence) and not isinstance(value, str) else value
-        )
-
-    if randomized_axes:
-        if not supports_domain_randomization(task_name):
-            raise ValueError(
-                f"domain_randomization={list(randomized_axes)} was asked for, but {task_name} is not "
-                "one of this project's own task ids and its class takes no `domain_randomization` "
+                f"perturbations={perturbation_config.to_config()} was asked for, but {task_name} is "
+                "not one of this project's own task ids and its class takes no `perturbations` "
                 "kwarg. Use the corresponding -v1.1 id (see `TASKS_IN_USE`), which does."
             )
-        # a plain list, so a list from a hydra ListConfig is recorded into env.spec.kwargs (and any
+        # plain dicts and lists, so a hydra DictConfig is recorded into env.spec.kwargs (and any
         # trajectory json) as json
-        env_kwargs["domain_randomization"] = list(randomized_axes)
-        env_kwargs["domain_randomization_split"] = domain_randomization_split
+        env_kwargs["perturbations"] = perturbation_config.to_config()
 
     with camera_view_applied(view, task_name, wrist_only=wrist_only, rig=rig):
         env = gym.make(
@@ -308,9 +180,10 @@ def make_env(
             **env_kwargs,
         )
     check_camera_view(env, view, focused_camera_uid)
-    # a randomized lighting is checked against what the env drew for its first episode
-    check_lighting(env, env.unwrapped.lighting if randomized_axes else lighting_config)
-    check_viewpoint(env, viewpoint_config)
+    # checked against what the env drew for its first episode
+    if hasattr(env.unwrapped, "lighting"):  # the stock `-v1` ids have none
+        check_lighting(env, env.unwrapped.lighting)
+    check_perturbations(env)
 
     if ignore_terminations:
         env = IgnoreTerminations(env)

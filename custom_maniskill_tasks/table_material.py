@@ -1,7 +1,8 @@
-"""`table_material`: make the table top look like a different material.
+"""Table materials: make the table top look like a different material.
 
-A single keyword naming the material: `"default"` (the stock wood, untouched), `"marble"`, `"glass"`,
-`"metal"` (brushed steel), `"gold"`, `"concrete"` or `"rubber"` (matt black).
+The names are `"default"` (the stock wood, untouched), `"marble"`, `"glass"`, `"metal"` (brushed
+steel), `"gold"`, `"concrete"` and `"rubber"` (matt black); `perturbation_classes` has the
+`table_material` class that picks among them.
 
 Only the *render* material of the table is edited -- its colour, roughness, metallic, specular and
 transmission. The table's collision shape is a separate box built from its own friction material,
@@ -9,13 +10,9 @@ which this never touches, so contact behaviour is identical under every material
 cameras see changes. (`"glass"` is a see-through look, not a see-through table: nothing falls
 through it.)
 
-It combines with the other appearance kwargs. It is applied before `texture`, so
-`table_material="metal", texture="table-checker"` is a checkered table that is still metallic, the
-pattern replacing the material's colour only; and before `lighting`'s `table_tint`, which still
-multiplies in on top.
-
-It is an ordinary env kwarg (`TableMaterialMixin`), applied in `_load_scene`, before the scene first
-renders -- a material edited after that is stored but never reaches the renderer.
+It is applied in `_load_scene`, before the scene first renders -- a material edited after that is
+stored but never reaches the renderer -- and before the table colour's tint, which still multiplies
+in on top.
 """
 
 from __future__ import annotations
@@ -132,29 +129,24 @@ def _apply_table_material(env, name: str) -> None:
 
 
 class TableMaterialMixin:
-    """Gives a task the `table_material` kwarg: the material the table top looks made of."""
+    """Builds the table's material the `table_material` perturbation class asked for, which
+    `PerturbationClassesMixin` sets (`_set_table_material`) before each reconfiguration. Without
+    one the table is the stock wood."""
 
-    def __init__(self, *args, table_material=DEFAULT_TABLE_MATERIAL, **kwargs):
-        self._table_material = canonical_table_material(table_material)
+    def __init__(self, *args, **kwargs):
+        self._table_material = DEFAULT_TABLE_MATERIAL
         super().__init__(*args, **kwargs)
 
     @property
     def table_material(self) -> str:
-        """The material this env's table was built with; "default" is the stock wood."""
+        """The material the table is currently built with; "default" is the stock wood."""
         return self._table_material
 
-    def _set_table_material(self, condition) -> None:
-        """Take `condition` as this env's material from the next reconfiguration (`domain_randomization`)."""
-        self._table_material = canonical_table_material(condition)
+    def _set_table_material(self, name: str) -> None:
+        """Take `name` as this env's material from the next reconfiguration."""
+        self._table_material = canonical_table_material(name)
 
     def _load_scene(self, options: dict):
         super()._load_scene(options)
         if self._table_material != DEFAULT_TABLE_MATERIAL:
             _apply_table_material(self, self._table_material)
-
-
-def supports_table_material(task_name: str) -> bool:
-    from mani_skill.utils.registration import REGISTERED_ENVS
-
-    spec = REGISTERED_ENVS.get(task_name)
-    return spec is not None and issubclass(spec.cls, TableMaterialMixin)

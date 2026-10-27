@@ -86,12 +86,12 @@ own frame, as sapien has it). Both `PandaHandCam` and `panda_wristcam` mount it 
 
 @dataclass(frozen=True, eq=False)
 class WristRig:
-    """Everything about one robot's wrist camera that the viewpoint and distractor geometry needs.
+    """Everything about one robot's wrist camera that the viewpoint perturbation needs.
 
     A rig is a property of the robot a task is built on, not of the task: `PANDA_RIG` is the
     realsense every `-v1.1` dataset was rendered with, `fr3.FR3_ZED_RIG` the ZED mini on the
-    real FR3. `ViewpointConfig` carries the rig it was parsed for, so every helper that takes a
-    config (projection, `in_wrist_view`, `visible_table_bounds`) uses the right camera.
+    real FR3. `ViewpointConfig` carries the rig it shifts, so every helper that takes a config uses the
+    right camera.
     """
 
     name: str
@@ -102,7 +102,7 @@ class WristRig:
     nominal_position: np.ndarray
     nominal_quaternion: np.ndarray
     """Where the camera is in the world at reset, before qpos noise (`robot_init_qpos_noise`), wxyz.
-    Measured off the built env, and checked against it by `tests/test_fr3.py` / `test_viewpoint.py`."""
+    Measured off the built env, and checked against it by `tests/test_fr3.py`."""
     finger_line: float
     """How far down the image (fraction of its height) the gripper's fingers begin to get in the way."""
     wrist_robot_uid: str | None = None

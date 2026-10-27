@@ -12,21 +12,18 @@ stack themselves (a dataset replay that needs `sensor_configs` for `RecordEpisod
 inserts its own observation adapter between `FrameSkip` and `FrameStack`).
 """
 
-from custom_maniskill_tasks.axes import (
-    AXES,
-    NOT_GRADED,
-    Axis,
-    axis,
-    conditions,
-    graded_kwargs,
+from custom_maniskill_tasks.perturbation_classes import (
+    CLASSES as PERTURBATION_CLASSES,
+    EVALUATION_TABLE_MATERIALS,
+    SPLITS as PERTURBATION_SPLITS,
+    Perturbations,
+    registry as perturbation_registry,
+    resolve_perturbations,
 )
-from custom_maniskill_tasks.domain_randomization import (
-    AXES_RANDOMIZED,
-    HELDOUT_TABLE_MATERIALS,
-    RANGES as DOMAIN_RANDOMIZATION_RANGES,
-    DomainRandomizationMixin,
-    canonical_domain_randomization,
-    supports_domain_randomization,
+from custom_maniskill_tasks.perturbation_mixin import (
+    PerturbationClassesMixin,
+    check_perturbations,
+    supports_perturbations,
 )
 from custom_maniskill_tasks.backends import backend_kwargs, resolve_sim_backend
 from custom_maniskill_tasks.cameras import (
@@ -49,58 +46,22 @@ from custom_maniskill_tasks.cameras import (
 from custom_maniskill_tasks.fr3 import FR3, FR3_UIDS, FR3_ZED_RIG, FR3ZED
 from custom_maniskill_tasks.lighting import (
     DEFAULT_LIGHTING,
-    DEFAULT_LIGHTING_PRESET,
-    DOMAIN_RANDOMIZATION,
-    DOMAIN_RANDOMIZATION_PRESETS,
-    LIGHTING_PRESETS,
     DirectionalLight,
-    EpisodeLighting,
     LightingConfig,
     LightingMixin,
-    LightingRandomization,
-    SceneProp,
     apply_lighting,
-    canonical_lighting,
     check_lighting,
-    domain_randomized,
-    lighting_config_from_dict,
+    lighting_config,
     supports_lighting,
 )
-from custom_maniskill_tasks.distractors import (
-    MAX_DISTRACTORS,
-    YCB_POOL,
-    DistractorsMixin,
-    canonical_distractors,
-)
 from custom_maniskill_tasks.make_env import TASKS_IN_USE, make_env
-from custom_maniskill_tasks.corruption import (
-    DEFAULT_CORRUPTION,
-    CorruptionConfig,
-    CorruptionMixin,
-    canonical_corruption,
-    corrupt_images,
-)
-from custom_maniskill_tasks.perturbations import PerturbationsMixin
 from custom_maniskill_tasks.table_material import (
     DEFAULT_TABLE_MATERIAL,
     MATERIALS,
     TableMaterialMixin,
     canonical_table_material,
 )
-from custom_maniskill_tasks.texture import (
-    DEFAULT_TEXTURE,
-    PATTERNS,
-    TextureMixin,
-    canonical_texture,
-    pattern_mask,
-)
-from custom_maniskill_tasks.viewpoint import (
-    DEFAULT_VIEWPOINT,
-    ViewpointConfig,
-    ViewpointMixin,
-    canonical_viewpoint,
-    check_viewpoint,
-)
+from custom_maniskill_tasks.viewpoint import ViewpointConfig, check_viewpoint
 
 # imported for its side effect: registering the -v1.1 and -v1.2 task ids with ManiSkill and gymnasium
 from custom_maniskill_tasks.tasks import (
@@ -126,52 +87,27 @@ from custom_maniskill_tasks.wrappers import (
 )
 
 __all__ = [
-    "AXES_RANDOMIZED",
-    "HELDOUT_TABLE_MATERIALS",
-    "DOMAIN_RANDOMIZATION_RANGES",
-    "DomainRandomizationMixin",
-    "canonical_domain_randomization",
-    "supports_domain_randomization",
-    "AXES",
-    "NOT_GRADED",
-    "Axis",
-    "axis",
-    "conditions",
-    "graded_kwargs",
+    "EVALUATION_TABLE_MATERIALS",
+    "PERTURBATION_CLASSES",
+    "PERTURBATION_SPLITS",
+    "Perturbations",
+    "PerturbationClassesMixin",
+    "check_perturbations",
+    "perturbation_registry",
+    "resolve_perturbations",
+    "supports_perturbations",
     "CAMERA_VIEWS",
     "CONTROL_MODE",
     "DEFAULT_CAMERA_RESOLUTION",
     "DEFAULT_LIGHTING",
-    "DEFAULT_LIGHTING_PRESET",
     "DINORewardWrapper",
-    "DOMAIN_RANDOMIZATION",
-    "DOMAIN_RANDOMIZATION_PRESETS",
     "DirectionalLight",
-    "DEFAULT_CORRUPTION",
     "DEFAULT_TABLE_MATERIAL",
-    "DEFAULT_TEXTURE",
-    "DEFAULT_VIEWPOINT",
-    "MAX_DISTRACTORS",
     "MATERIALS",
-    "PATTERNS",
-    "YCB_POOL",
-    "CorruptionConfig",
-    "CorruptionMixin",
-    "DistractorsMixin",
-    "PerturbationsMixin",
     "TableMaterialMixin",
-    "TextureMixin",
     "ViewpointConfig",
-    "ViewpointMixin",
-    "canonical_corruption",
-    "canonical_distractors",
     "canonical_table_material",
-    "canonical_texture",
-    "canonical_viewpoint",
     "check_viewpoint",
-    "corrupt_images",
-    "pattern_mask",
-    "EpisodeLighting",
     "FULL_HORIZON_TASKS",
     "FOCUSED_CAMERA_EYE",
     "FOCUSED_CAMERA_FOV",
@@ -186,10 +122,8 @@ __all__ = [
     "FrameStack",
     "FullHorizonMixin",
     "IgnoreTerminations",
-    "LIGHTING_PRESETS",
     "LightingConfig",
     "LightingMixin",
-    "LightingRandomization",
     "LiftPegUprightFullHorizonEnv",
     "PANDA_RIG",
     "PandaHandCam",
@@ -198,7 +132,6 @@ __all__ = [
     "PlaceSphereFullHorizonEnv",
     "PokeCubeFullHorizonEnv",
     "PushCubeFullHorizonEnv",
-    "SceneProp",
     "TASKS_IN_USE",
     "WRIST_CAMERA_FOV",
     "WRIST_CAMERA_UID",
@@ -208,15 +141,13 @@ __all__ = [
     "build_sensor_configs",
     "camera_view_applied",
     "canonical_camera_view",
-    "canonical_lighting",
     "check_camera_view",
     "check_lighting",
     "clone_observations",
-    "domain_randomized",
-    "lighting_config_from_dict",
     "make_env",
     "resolve_sim_backend",
     "stack_observations",
     "stack_space",
+    "lighting_config",
     "supports_lighting",
 ]
