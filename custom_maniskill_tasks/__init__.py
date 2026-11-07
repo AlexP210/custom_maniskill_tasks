@@ -76,6 +76,15 @@ from custom_maniskill_tasks.tasks import (
     PokeCubeFullHorizonEnv,
     PushCubeFullHorizonEnv,
 )
+# LiftPegUpright-v2: stand the peg on its marked end (see `marked_peg`)
+from custom_maniskill_tasks.marked_peg import (
+    BASE_MARKINGS,
+    MARKED_PEG_TASKS,
+    MARKINGS,
+    TOP_MARKINGS,
+    LiftPegUprightMarkedEnv,
+    marking_pairs,
+)
 from custom_maniskill_tasks.wrappers import (
     DINORewardWrapper,
     FrameSkip,
@@ -87,6 +96,12 @@ from custom_maniskill_tasks.wrappers import (
 )
 
 __all__ = [
+    "BASE_MARKINGS",
+    "MARKED_PEG_TASKS",
+    "MARKINGS",
+    "TOP_MARKINGS",
+    "LiftPegUprightMarkedEnv",
+    "marking_pairs",
     "EVALUATION_TABLE_MATERIALS",
     "PERTURBATION_CLASSES",
     "PERTURBATION_SPLITS",

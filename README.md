@@ -22,6 +22,7 @@ Importing the package registers the ids this project's datasets are collected wi
 | `PickCube-v1.1` | `PickCube-v1` with no early termination |
 | `PickSingleYCB-v1.1` | `PickSingleYCB-v1` with no early termination |
 | `PushCube-v1.2`, `PlaceSphere-v1.2`, `LiftPegUpright-v1.2`, `PokeCube-v1.2`, `PickCube-v1.2`, `PickSingleYCB-v1.2` | the `-v1.1` task of the same name on the Franka Research 3, with the real robot's ZED mini wrist camera: see [FR3 and the ZED mini](#fr3-and-the-zed-mini-v12) |
+| `LiftPegUpright-v2` | `LiftPegUpright-v1.1` where the peg must stand on its *marked* end, told apart from the other end only by the markings' shape: see [The marked peg](#the-marked-peg-liftpegupright-v2) |
 
 `PickSingleYCB-v1.1` is the one id whose scene is not fixed: the YCB object in it is drawn per
 parallel env at reconfiguration, and the stock task's own `reconfiguration_freq` default (1 at
@@ -248,6 +249,42 @@ other viewpoint aspects are shifts relative to whichever camera it is, so the sa
 They were set for the Panda's view and have not been re-tuned for the ZED, which sees only about
 16 x 21 cm of table at reset.
 
+## The marked peg (LiftPegUpright-v2)
+
+`LiftPegUpright-v1.1` is solvable from colour alone (a red/blue peg, always lying along x, either
+end may go down). v2 is the same task where success depends on reading a shape, for testing what a
+pretrained visual encoder buys:
+
+- the peg is one colour all over, and each end carries a marking: the base end one from
+  `BASE_MARKINGS`, the other end a decoy from `TOP_MARKINGS`, both in one colour, so only their
+  shape tells the ends apart (band vs double band, plus vs X, dots vs stripe);
+- body and marking colours are drawn per env;
+- which way the base end faces is redrawn every reset;
+- success is signed: the base end must be on the table. Standing it on the decoy end earns the
+  same dense reward as leaving it flat.
+
+The markings are visual-only geometry 1.5 mm proud of the faces, so the collision box, mass and
+dynamics are v1.1's, and a seed places the peg at the same xy as v1.1. The base end is always the
+peg's local +x, so a state observation already says which way it points (enough for a
+privileged-state PPO expert); the markings themselves are only in the pixels.
+`env.unwrapped.peg_markings` says what each env drew and is in no observation.
+
+| kwarg | values | |
+| --- | --- | --- |
+| `markings` | `train` (default), `evaluation`, `full` | `train`: 3 base x 3 decoy markings. `evaluation`: exactly one held-out marking (`frame` as base or `checker` as decoy) paired with a training one, so it is solvable by elimination. `full`: 4 x 4 |
+| `decoy` | `True` (default), `False` | `False` leaves the top end plain: "find the marked end", the easier rung |
+| `yaw` | `flip` (default), `full` | `flip` turns the peg by 0 or pi, keeping v1.1's control problem (or its mirror); `full` turns it uniformly |
+| `colours` | `random` (default), `fixed` | `fixed` is a grey body with black markings |
+
+Markings are chosen when the scene is built (GPU PhysX cannot change an actor's look afterwards),
+so, as in `PickSingleYCB`, `reconfiguration_freq` defaults to 1 at `num_envs=1` (new markings each
+reset, ~0.15 s on physx_cpu) and to 0 above it (one draw per parallel env for the run, while the
+base end's direction is still redrawn every reset). `perturbations` works as on the `-v1.1` ids.
+
+```python
+env = make_env("LiftPegUpright-v2", camera_view="wrist", markings="evaluation", decoy=True)
+```
+
 ## Tests
 
 No pytest in the project environment, so the files run standalone:
@@ -259,6 +296,7 @@ python tests/test_perturbation_classes.py   # the class/aspect registry, resolve
 python tests/test_perturbation_mixin.py     # `perturbations` on real envs: each class shows, redraws, reproduces
 python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_skip equivalence
 python tests/test_fr3.py        # the -v1.2 ids: the FR3, the ZED's pose and intrinsics, rig-aware fov
+python tests/test_marked_peg.py # LiftPegUpright-v2: marking splits, v1.1 dynamics, signed success
 ```
 
 `test_wrappers.py` covers what the simulator cannot show: staggered episode ends across a batch

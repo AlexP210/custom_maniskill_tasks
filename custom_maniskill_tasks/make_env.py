@@ -41,6 +41,8 @@ TASKS_IN_USE = (
     "PokeCube-v1.2",
     "PickCube-v1.2",
     "PickSingleYCB-v1.2",
+    # LiftPegUpright-v1.1 with the peg to be stood on its marked end (see `marked_peg`)
+    "LiftPegUpright-v2",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",
