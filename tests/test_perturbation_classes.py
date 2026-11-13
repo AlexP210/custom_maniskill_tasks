@@ -75,7 +75,8 @@ def test_unknown_names_and_malformed_values_are_rejected():
 
 def test_fixed_values_are_checked_against_the_full_range_strictly():
     for config in (
-        {"lighting": {"temperature": 1.5}}, {"lighting": {"brightness": 0.1}},
+        {"lighting": {"temperature": 1.7}}, {"lighting": {"temperature": -1.7}}, {"lighting": {"brightness": 0.1}},
+        {"object_hue": {"degrees": 181}},
         {"lighting": {"brightness": 9}}, {"lighting": {"direction": -0.1}},
         {"table_colour": {"r": 1.41}}, {"viewpoint": {"pitch": 16}},
     ):
@@ -83,6 +84,29 @@ def test_fixed_values_are_checked_against_the_full_range_strictly():
     # the ends themselves are in, and a fixed value may lie in the evaluation part
     p = resolve_perturbations({"lighting": {"temperature": 1.0, "brightness": 8}, "viewpoint": {"pitch": -15}})
     assert p["lighting"]["temperature"] == 1.0 and p["viewpoint"]["pitch"] == -15.0
+
+
+def test_a_fixed_temperature_may_pass_the_range_but_the_splits_may_not():
+    p = resolve_perturbations({"lighting": {"temperature": -1.1}})
+    assert p["lighting"]["temperature"] == -1.1 and p.to_config() == {"lighting": {"temperature": -1.1}}
+    assert resolve_perturbations({"lighting": {"temperature": 1.6}})["lighting"]["temperature"] == 1.6
+    temperature = registry()["lighting"]["temperature"].range
+    assert (temperature.low, temperature.high) == (-1.0, 1.0), "the splits are cut from +-1, as before"
+    assert not temperature.contains(-1.1) and not temperature.contains(-1.1, "evaluation")
+    rng = np.random.default_rng(0)
+    assert all(-1.0 <= temperature.sample(rng, "full") <= 1.0 for _ in range(300))
+    # only temperature has a wider fixed range
+    assert [(c, n) for c, a in registry().items() for n, x in a.items()
+            if x.range is not None and x.range.fixed_low is not None] == [("lighting", "temperature")]
+
+
+def test_object_hue_is_a_class_of_its_own():
+    assert CLASSES.index("object_hue") == CLASSES.index("object_colour") + 1
+    assert resolve_perturbations({"object_hue": {"degrees": 30}}).to_config() == {"object_hue": {"degrees": 30.0}}
+    assert resolve_perturbations({"object_hue": {"degrees": 0}}).is_default
+    assert resolve_perturbations({"object_hue": "default"})["object_hue"] == {"degrees": 0.0}
+    p = resolve_perturbations({"object_hue": "randomize-evaluation"})
+    assert abs(p.draw("object_hue", 3)["degrees"]) >= 180 * (1 - EVALUATION_FRACTION) - 1e-9
 
 
 def test_splits_partition_every_range():

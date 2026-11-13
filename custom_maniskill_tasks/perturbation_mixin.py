@@ -15,6 +15,8 @@ What each class does to the scene:
   `table_tint`);
 - `table_material`: the table's material (`TableMaterialMixin._set_table_material`);
 - `object_colour`: an offset to each of the manipulated object's R, G and B;
+- `object_hue`: every task object's colours turned round the hue wheel (the table, ground and
+  robot are not objects);
 - `table_texture`: a scale, shear, rotation and shift of the table's texture;
 - `viewpoint`: the wrist camera moved, turned and zoomed, by posing it in `sensor_configs`.
 
@@ -29,7 +31,12 @@ from typing import Any, Mapping
 import numpy as np
 
 from custom_maniskill_tasks.cameras import PANDA_RIG, WRIST_CAMERA_UID, WristRig
-from custom_maniskill_tasks.appearance import _apply_object_colour, _apply_table_texture, table_tint
+from custom_maniskill_tasks.appearance import (
+    _apply_object_colour,
+    _apply_object_hue,
+    _apply_table_texture,
+    table_tint,
+)
 from custom_maniskill_tasks.lighting import lighting_config
 from custom_maniskill_tasks.perturbation_classes import Perturbations, resolve_perturbations
 from custom_maniskill_tasks.viewpoint import ViewpointConfig, wrist_camera_local_pose
@@ -107,6 +114,8 @@ class PerturbationClassesMixin:
         drawn = self._episode_perturbations
         if "object_colour" in drawn:
             _apply_object_colour(self, [drawn["object_colour"][c] for c in "rgb"])
+        if "object_hue" in drawn:
+            _apply_object_hue(self, drawn["object_hue"]["degrees"])
         if "table_texture" in drawn:
             _apply_table_texture(self, drawn["table_texture"])
 

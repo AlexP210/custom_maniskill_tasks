@@ -68,8 +68,9 @@ change together, and says per aspect what to do:
 
 | class | aspects |
 | --- | --- |
-| `lighting` | `brightness` (x the stock light levels), `direction` (of the key light, 0 stock to 1 from the side), `temperature` (-1 is 2700 K, 0 the stock 6500 K, 1 is 12000 K) |
+| `lighting` | `brightness` (x the stock light levels), `direction` (of the key light, 0 stock to 1 from the side), `temperature` (-1 is 2700 K, 0 the stock 6500 K, 1 is 12000 K; a fixed value may go to +-1.6, about 2000 K and 24400 K, while `randomize-*` stays within +-1) |
 | `object_colour` | `r`, `g`, `b` (added to the manipulated object's channels) |
+| `object_hue` | `degrees` every task object's colours are turned round the hue wheel (red -> yellow -> green -> blue at 0 -> 60 -> 120 -> 240); greys stay grey; table, ground and robot are not objects |
 | `table_colour` | `r`, `g`, `b` (gains on the table's channels), `brightness` |
 | `table_texture` | `scale`, `shear`, `rotation`, `shift_x`, `shift_y` of the table's texture |
 | `table_material` | `material`: wood (`default`), `marble`, `metal`, `concrete`, `rubber`, `glass`, `gold`. Visual only: friction and contact are unchanged |

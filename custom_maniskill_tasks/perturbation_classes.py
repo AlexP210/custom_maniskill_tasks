@@ -22,6 +22,8 @@ applies that to all its aspects. Classes left out are `default`.
   material); `evaluation` is what training leaves out -- both ends of a two-sided range, the top
   end of a one-sided one; `full` is the whole range.
 - A fixed value must lie inside the aspect's full range; anything else is an error, not a clamp.
+  `lighting.temperature` is the one aspect whose fixed values may go past it, to +-1.6; the splits
+  are cut from the +-1 range regardless (`Range.fixed_low` / `fixed_high`).
 - `viewpoint.fov` is in degrees about the wrist camera's own, which depends on the robot, so the
   registry is built for a rig's nominal fov (`registry(fov_degrees)`).
 
@@ -65,6 +67,11 @@ class Range:
     two_sided: bool = True
     """The neutral value is in the middle, so the evaluation part is both ends (half each); if
     False the neutral value is `low` and the evaluation part is the top end alone."""
+    fixed_low: float | None = None
+    fixed_high: float | None = None
+    """Where a *fixed* value may lie, if wider than `low` to `high`. The splits (what `randomize-*`
+    draws, and so what training leaves out) are always cut from `low` to `high`, so widening what
+    can be asked for never moves them; it only lets a condition lie past the end of the range."""
 
     def bands(self, split: str) -> list[tuple[float, float]]:
         """The sub-intervals of [0, 1] (the range's own scale) that `split` draws from."""
@@ -87,6 +94,15 @@ class Range:
         if self.log:
             return float(np.exp(np.log(self.low) + u * (np.log(self.high) - np.log(self.low))))
         return self.low + u * (self.high - self.low)
+
+    def accepts_fixed(self, value: float) -> bool:
+        """Whether `value` may be given as a fixed value: inside `low` to `high`, or inside
+        `fixed_low` to `fixed_high` where those widen it."""
+        if self.contains(value):
+            return True
+        low = self.low if self.fixed_low is None else self.fixed_low
+        high = self.high if self.fixed_high is None else self.fixed_high
+        return not self.log and low - 1e-9 <= value <= high + 1e-9
 
     def contains(self, value: float, split: str = "full") -> bool:
         if self.log:
@@ -124,9 +140,11 @@ class Aspect:
                 f"(split one of {', '.join(SPLITS)})."
             )
         value = float(value)
-        if not self.range.contains(value):
+        if not self.range.accepts_fixed(value):
+            low = self.range.low if self.range.fixed_low is None else self.range.fixed_low
+            high = self.range.high if self.range.fixed_high is None else self.range.fixed_high
             raise ValueError(
-                f"{where}={value:g} is outside its range, {self.range.low:g} to {self.range.high:g}"
+                f"{where}={value:g} is outside its range, {low:g} to {high:g}"
                 f"{' ' + self.unit if self.unit else ''}."
             )
         return value
@@ -156,9 +174,14 @@ def registry(fov_degrees: float = DEFAULT_FOV_DEGREES) -> dict[str, dict[str, As
         "lighting": {a.name: a for a in (
             c("brightness", 1.0, 0.25, 8.0, "x the default's light levels", log=True),
             c("direction", 0.0, 0.0, 1.0, "0 = default's key light, 1 = from the side", two_sided=False),
-            c("temperature", 0.0, -1.0, 1.0, "-1 = 2700 K, 0 = 6500 K, 1 = 12000 K"),
+            # Fixed values run to 1.6 either side (about 2000 K and 24400 K), the furthest a blackbody
+            # stays a light colour: past about 1917 K its blue channel goes negative in linear sRGB,
+            # and the Planckian fit stops at 25000 K. Randomized draws stay within +-1.
+            c("temperature", 0.0, -1.0, 1.0, "-1 = 2700 K, 0 = 6500 K, 1 = 12000 K",
+              fixed_low=-1.6, fixed_high=1.6),
         )},
         "object_colour": {n: c(n, 0.0, -0.4, 0.4, "added to the channel, in [0, 1]") for n in "rgb"},
+        "object_hue": {"degrees": c("degrees", 0.0, -180.0, 180.0, "turned round the hue wheel")},
         "table_colour": {a.name: a for a in (
             *(c(n, 1.0, 0.6, 1.4, "x the table's channel") for n in "rgb"),
             c("brightness", 1.0, 0.4, 1.6, "x all three channels"),

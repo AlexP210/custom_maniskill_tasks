@@ -63,6 +63,7 @@ def test_every_class_changes_the_image():
         {"lighting": {"temperature": -0.8}},
         {"lighting": {"direction": 1.0}},
         {"object_colour": {"r": 0.4, "g": -0.4}},
+        {"object_hue": {"degrees": 120}},
         {"table_colour": {"brightness": 0.5}},
         {"table_texture": {"rotation": 30, "scale": 2}},
         {"table_material": {"material": "marble"}},
@@ -83,6 +84,28 @@ def resolve_config(config):
     from custom_maniskill_tasks import resolve_perturbations
 
     return resolve_perturbations(config).to_config()
+
+
+def test_object_hue_turns_the_object_and_nothing_else():
+    stock = _build()
+    reference = _frame(stock.reset(seed=0)[0])
+    stock.close()
+    env = _build(perturbations={"object_hue": {"degrees": 120}})
+    turned = _frame(env.reset(seed=0)[0])
+    env.close()
+    changed = np.abs(turned - reference).max(-1) > 8
+    assert changed.sum() > 50, "the cube changed colour"
+    # the table and everything else is untouched: the changed pixels are a small part of the frame
+    assert changed.mean() < 0.2
+
+
+def test_a_warmer_than_2700k_light_renders_and_differs_from_2700k():
+    frames = {}
+    for temperature in (-1.0, -1.1):
+        env = _build(perturbations={"lighting": {"temperature": temperature}})
+        frames[temperature] = _frame(env.reset(seed=0)[0])
+        env.close()
+    assert np.abs(frames[-1.0] - frames[-1.1]).mean() > 0.1
 
 
 def test_fixed_aspects_stay_while_randomized_ones_redraw_each_reset():
@@ -142,7 +165,7 @@ def test_the_wrist_camera_is_posed_each_episode_by_the_drawn_viewpoint():
 
 
 def test_bad_configs_are_refused_before_anything_is_built():
-    assert "outside its range" in _error(_build, perturbations={"lighting": {"temperature": 1.5}})
+    assert "outside its range" in _error(_build, perturbations={"lighting": {"temperature": 1.7}})
     assert "Unknown perturbation class" in _error(_build, perturbations={"corruption": "default"})
     assert "wrist" in _error(make_env, TASK, sim_backend="physx_cpu", camera_view="default",
                              perturbations={"viewpoint": {"pitch": 5}})
