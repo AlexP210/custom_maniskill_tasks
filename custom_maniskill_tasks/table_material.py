@@ -1,7 +1,8 @@
 """Table materials: make the table top look like a different material.
 
 The names are `"default"` (the stock wood, untouched), `"marble"`, `"glass"`, `"metal"` (brushed
-steel), `"gold"`, `"concrete"` and `"rubber"` (matt black); `perturbation_classes` has the
+steel), `"gold"`, `"concrete"`, `"rubber"` (matt black) and `"plastic"` (a slatted, moulded
+picnic-table top; fixed values only); `perturbation_classes` has the
 `table_material` class that picks among them.
 
 Only the *render* material of the table is edited -- its colour, roughness, metallic, specular and
@@ -67,6 +68,19 @@ def _brushed_metal_texture() -> np.ndarray:
     return np.repeat(tone[..., None], 3, axis=-1) * np.array([0.98, 1.0, 1.02])
 
 
+def _plastic_texture() -> np.ndarray:
+    """Moulded plastic picnic-table top: an off-white with eight slats per texture repeat (the
+    table top is about one repeat, so ~15 cm slats), separated by dark grooves, and a faint fine
+    grain from the mould. The slats run along the table's long side (the texture's rows)."""
+    axis = (np.arange(MATERIAL_TEXTURE_SIZE) + 0.5) / MATERIAL_TEXTURE_SIZE
+    _, y = np.meshgrid(axis, axis)
+    across = (y * 8) % 1.0  # 0..1 across each slat
+    groove = np.clip(1.0 - np.minimum(across, 1.0 - across) / 0.035, 0.0, 1.0) ** 1.5
+    rounding = 0.04 * np.cos(np.pi * (across - 0.5))  # slat edges a touch darker than their middles
+    tone = 0.86 + rounding - 0.5 * groove + 0.03 * (_fbm((16, 32, 64)) - 0.5)
+    return np.clip(np.stack([tone, tone * 0.985, tone * 0.95], axis=-1), 0.0, 1.0)
+
+
 def _concrete_texture() -> np.ndarray:
     tone = 0.42 + 0.22 * (_fbm((6, 12, 24, 48)) - 0.5)
     return np.repeat(tone[..., None], 3, axis=-1)
@@ -83,6 +97,7 @@ MATERIALS: dict[str, MaterialSpec] = {
     "gold": MaterialSpec((1.0, 0.77, 0.34), roughness=0.25, metallic=1.0),
     "concrete": MaterialSpec((0.45, 0.45, 0.45), roughness=0.95, specular=0.2, texture=_concrete_texture),
     "rubber": MaterialSpec((0.06, 0.06, 0.06), roughness=0.85, specular=0.2),
+    "plastic": MaterialSpec((0.86, 0.85, 0.82), roughness=0.45, specular=0.5, texture=_plastic_texture),
 }
 
 

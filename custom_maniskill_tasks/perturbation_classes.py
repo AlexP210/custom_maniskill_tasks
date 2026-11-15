@@ -24,6 +24,13 @@ applies that to all its aspects. Classes left out are `default`.
 - A fixed value must lie inside the aspect's full range; anything else is an error, not a clamp.
   `lighting.temperature` is the one aspect whose fixed values may go past it, to +-1.6; the splits
   are cut from the +-1 range regardless (`Range.fixed_low` / `fixed_high`).
+- `moving_light.frequency` is the one aspect that changes during an episode rather than per episode:
+  the key light swings from its default direction to the side and back `frequency` times per 100
+  env steps (4 is a 25-step period).
+  It only works on `physx_cpu` (the GPU renderer freezes the lights when the scene is built), and
+  the env refuses it on `physx_cuda`.
+- `table_spin.speed` also acts during the episode: the table's texture turns `speed` degrees per env
+  step about the middle of the table top (`appearance.build_table_spin_disc`).
 - `viewpoint.fov` is in degrees about the wrist camera's own, which depends on the robot, so the
   registry is built for a rig's nominal fov (`registry(fov_degrees)`).
 
@@ -54,6 +61,12 @@ TABLE_MATERIALS = ("default", "marble", "glass", "metal", "gold", "concrete", "r
 EVALUATION_TABLE_MATERIALS = ("glass", "gold")
 """The two that look least like the rest: see-through, and a coloured metal."""
 TRAIN_TABLE_MATERIALS = tuple(m for m in TABLE_MATERIALS if m not in EVALUATION_TABLE_MATERIALS)
+FIXED_ONLY_TABLE_MATERIALS = ("plastic",)
+"""Materials that may be asked for by name but that no `randomize-*` split draws: added after the
+splits were in use, and kept out of them so every existing randomized config draws as it did."""
+
+OBJECT_TEXTURES = ("default", "wood", "paper", "printed_plastic")
+"""`appearance.OBJECT_TEXTURES` plus the untextured default; all fixed-only (no split draws them)."""
 
 
 @dataclass(frozen=True)
@@ -102,7 +115,9 @@ class Range:
             return True
         low = self.low if self.fixed_low is None else self.fixed_low
         high = self.high if self.fixed_high is None else self.fixed_high
-        return not self.log and low - 1e-9 <= value <= high + 1e-9
+        if self.log and value <= 0:  # a multiplier: only positive values mean anything
+            return False
+        return low - 1e-9 <= value <= high + 1e-9
 
     def contains(self, value: float, split: str = "full") -> bool:
         if self.log:
@@ -122,17 +137,17 @@ class Aspect:
     neutral: float | str
     range: Range | None = None
     choices: Mapping[str, tuple[str, ...]] | None = None
-    """For a categorical aspect: the values each split draws from."""
+    """For a categorical aspect: the values each split draws from, and under "fixed" the extra
+    values that may only be given as a fixed value (no split draws them)."""
     unit: str = ""
 
     def validate(self, cls: str, value) -> float | str:
         """`value` as this aspect's own type, or ValueError if it is not a legal fixed value."""
         where = f"{cls}.{self.name}"
         if self.choices is not None:
-            if value not in self.choices["full"]:
-                raise ValueError(
-                    f"{where}={value!r} is not one of {', '.join(map(repr, self.choices['full']))}."
-                )
+            allowed = (*self.choices["full"], *self.choices["fixed"])
+            if value not in allowed:
+                raise ValueError(f"{where}={value!r} is not one of {', '.join(map(repr, allowed))}.")
             return value
         if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
             raise ValueError(
@@ -169,10 +184,13 @@ def registry(fov_degrees: float = DEFAULT_FOV_DEGREES) -> dict[str, dict[str, As
         "train": TRAIN_TABLE_MATERIALS,
         "evaluation": EVALUATION_TABLE_MATERIALS,
         "full": TABLE_MATERIALS,
+        "fixed": FIXED_ONLY_TABLE_MATERIALS,
     }
     return {
         "lighting": {a.name: a for a in (
-            c("brightness", 1.0, 0.25, 8.0, "x the default's light levels", log=True),
+            # Fixed values run up to 64x, for stress tests past the point where the image saturates;
+            # randomized draws stay within 0.25-8.
+            c("brightness", 1.0, 0.25, 8.0, "x the default's light levels", log=True, fixed_high=64.0),
             c("direction", 0.0, 0.0, 1.0, "0 = default's key light, 1 = from the side", two_sided=False),
             # Fixed values run to 1.6 either side (about 2000 K and 24400 K), the furthest a blackbody
             # stays a light colour: past about 1917 K its blue channel goes negative in linear sRGB,
@@ -180,6 +198,17 @@ def registry(fov_degrees: float = DEFAULT_FOV_DEGREES) -> dict[str, dict[str, As
             c("temperature", 0.0, -1.0, 1.0, "-1 = 2700 K, 0 = 6500 K, 1 = 12000 K",
               fixed_low=-1.6, fixed_high=1.6),
         )},
+        # The key light swung back and forth during the episode, from the default's direction,
+        # through overhead, to `lighting.direction=1` (from the side) and back, `frequency` times
+        # per 100 env steps. 0 (neutral) is a still light. Physx_cpu only: the GPU renderer takes
+        # its lights once, when the scene is built, so on physx_cuda the light would not move.
+        "moving_light": {"frequency": c("frequency", 0.0, 0.0, 10.0, "swings there and back per 100 env steps",
+                                        two_sided=False)},
+        # The table's texture turned about the middle of the table top by `speed` degrees every env
+        # step (7.2: one full turn per 50-step episode). Built as a disc carrying the table's own
+        # texture laid on the top, so it works on physx_cpu and physx_cuda alike.
+        "table_spin": {"speed": c("speed", 0.0, 0.0, 20.0, "degrees the table texture turns per env step",
+                                  two_sided=False)},
         "object_colour": {n: c(n, 0.0, -0.4, 0.4, "added to the channel, in [0, 1]") for n in "rgb"},
         "object_hue": {"degrees": c("degrees", 0.0, -180.0, 180.0, "turned round the hue wheel")},
         "table_colour": {a.name: a for a in (
@@ -194,12 +223,21 @@ def registry(fov_degrees: float = DEFAULT_FOV_DEGREES) -> dict[str, dict[str, As
             c("shift_y", 0.0, -0.5, 0.5, "periods of the texture"),
         )},
         "table_material": {"material": Aspect("material", "default", choices=table_materials)},
+        # The object of interest's surface given a pattern -- wood grain, paper fibre or 3D-print
+        # layer lines -- in its own colours (`appearance.OBJECT_TEXTURES`). Fixed values only.
+        "object_texture": {"texture": Aspect("texture", "default", choices={
+            "train": ("default",), "evaluation": ("default",), "full": ("default",),
+            "fixed": OBJECT_TEXTURES[1:],
+        })},
         "viewpoint": {a.name: a for a in (
-            c("left", 0.0, -4.0, 4.0, "cm across the image plane, + left"),
-            c("up", 0.0, -3.0, 3.0, "cm across the image plane, + up"),
+            # Fixed values of left/up/pitch/yaw reach the extremes of the earlier graded viewpoint
+            # sweep (axes.py before a2022ee: lateral -6..3 cm, vertical -1..5 cm, pitch -10..20 and
+            # yaw -20..10 degrees), here made symmetric; randomized draws keep the narrower ranges.
+            c("left", 0.0, -4.0, 4.0, "cm across the image plane, + left", fixed_low=-6.0, fixed_high=6.0),
+            c("up", 0.0, -3.0, 3.0, "cm across the image plane, + up", fixed_low=-5.0, fixed_high=5.0),
             c("forward", 0.0, -3.0, 3.0, "cm along the optical axis, + forward"),
-            c("pitch", 0.0, -15.0, 15.0, "degrees, + tilts the view up"),
-            c("yaw", 0.0, -15.0, 15.0, "degrees, + swings the view left"),
+            c("pitch", 0.0, -15.0, 15.0, "degrees, + tilts the view up", fixed_low=-20.0, fixed_high=20.0),
+            c("yaw", 0.0, -15.0, 15.0, "degrees, + swings the view left", fixed_low=-20.0, fixed_high=20.0),
             c("roll", 0.0, -15.0, 15.0, "degrees, + rolls right side down"),
             c("fov", fov_degrees, fov_degrees - spread, fov_degrees + spread, "degrees"),
         )},

@@ -1,3 +1,4 @@
+import pytest
 """`perturbation_classes`: `python tests/test_perturbation_classes.py`. No simulator needed, except
 for the one test that checks the material list against `table_material`."""
 
@@ -7,6 +8,7 @@ from custom_maniskill_tasks.perturbation_classes import (
     CLASSES,
     EVALUATION_FRACTION,
     EVALUATION_TABLE_MATERIALS,
+    FIXED_ONLY_TABLE_MATERIALS,
     TABLE_MATERIALS,
     TRAIN_TABLE_MATERIALS,
     Randomized,
@@ -77,13 +79,22 @@ def test_fixed_values_are_checked_against_the_full_range_strictly():
     for config in (
         {"lighting": {"temperature": 1.7}}, {"lighting": {"temperature": -1.7}}, {"lighting": {"brightness": 0.1}},
         {"object_hue": {"degrees": 181}},
-        {"lighting": {"brightness": 9}}, {"lighting": {"direction": -0.1}},
-        {"table_colour": {"r": 1.41}}, {"viewpoint": {"pitch": 16}},
+        {"lighting": {"brightness": 65}}, {"lighting": {"brightness": -1}}, {"lighting": {"direction": -0.1}},
+        {"table_colour": {"r": 1.41}}, {"viewpoint": {"pitch": 21}}, {"viewpoint": {"left": 6.1}},
     ):
         assert "outside its range" in _raises(ValueError, resolve_perturbations, config)
     # the ends themselves are in, and a fixed value may lie in the evaluation part
     p = resolve_perturbations({"lighting": {"temperature": 1.0, "brightness": 8}, "viewpoint": {"pitch": -15}})
     assert p["lighting"]["temperature"] == 1.0 and p["viewpoint"]["pitch"] == -15.0
+
+
+def test_a_fixed_brightness_may_pass_the_range_but_the_splits_may_not():
+    assert resolve_perturbations({"lighting": {"brightness": 64}})["lighting"]["brightness"] == 64.0
+    brightness = registry()["lighting"]["brightness"].range
+    rng = np.random.default_rng(0)
+    for split in ("train", "evaluation", "full"):
+        draws = [brightness.sample(rng, split) for _ in range(2000)]
+        assert 0.25 - 1e-9 <= min(draws) and max(draws) <= 8.0 + 1e-9
 
 
 def test_a_fixed_temperature_may_pass_the_range_but_the_splits_may_not():
@@ -95,9 +106,17 @@ def test_a_fixed_temperature_may_pass_the_range_but_the_splits_may_not():
     assert not temperature.contains(-1.1) and not temperature.contains(-1.1, "evaluation")
     rng = np.random.default_rng(0)
     assert all(-1.0 <= temperature.sample(rng, "full") <= 1.0 for _ in range(300))
-    # only temperature has a wider fixed range
-    assert [(c, n) for c, a in registry().items() for n, x in a.items()
-            if x.range is not None and x.range.fixed_low is not None] == [("lighting", "temperature")]
+    # the aspects with a wider fixed range: temperature, brightness (upwards only) and four viewpoint
+    # ones; every one of them still draws randomized values from its narrower range
+    widened = [(c, n) for c, a in registry().items() for n, x in a.items()
+               if x.range is not None and (x.range.fixed_low is not None or x.range.fixed_high is not None)]
+    assert widened == [("lighting", "brightness"), ("lighting", "temperature"), ("viewpoint", "left"),
+                       ("viewpoint", "up"), ("viewpoint", "pitch"), ("viewpoint", "yaw")]
+    for c, n in widened:
+        r = registry()[c][n].range
+        for split in ("train", "evaluation", "full"):
+            draws = [r.sample(rng, split) for _ in range(500)]
+            assert r.low - 1e-9 <= min(draws) and max(draws) <= r.high + 1e-9, (c, n, split)
 
 
 def test_object_hue_is_a_class_of_its_own():
@@ -139,12 +158,31 @@ def test_material_splits():
     for split, pool in (("train", TRAIN_TABLE_MATERIALS), ("evaluation", EVALUATION_TABLE_MATERIALS), ("full", TABLE_MATERIALS)):
         assert {aspect.sample(rng, split) for _ in range(400)} == set(pool), split
     assert resolve_perturbations({"table_material": {"material": "gold"}})["table_material"] == {"material": "gold"}
+    # fixed-only materials: accepted by name, never drawn
+    assert not set(FIXED_ONLY_TABLE_MATERIALS) & set(TABLE_MATERIALS)
+    for material in FIXED_ONLY_TABLE_MATERIALS:
+        assert resolve_perturbations({"table_material": {"material": material}})["table_material"] == {"material": material}
+
+
+def test_object_textures_are_fixed_only():
+    from custom_maniskill_tasks.appearance import OBJECT_TEXTURES as PATTERNS
+    from custom_maniskill_tasks.perturbation_classes import OBJECT_TEXTURES
+
+    assert set(OBJECT_TEXTURES) == {"default", *PATTERNS}
+    aspect = registry()["object_texture"]["texture"]
+    rng = np.random.default_rng(0)
+    for split in ("train", "evaluation", "full"):
+        assert {aspect.sample(rng, split) for _ in range(50)} == {"default"}
+    for name in PATTERNS:
+        assert resolve_perturbations({"object_texture": {"texture": name}}).active == ("object_texture",)
+    with pytest.raises(ValueError):
+        resolve_perturbations({"object_texture": {"texture": "velvet"}})
 
 
 def test_material_list_matches_table_material():
     from custom_maniskill_tasks.table_material import DEFAULT_TABLE_MATERIAL, MATERIALS
 
-    assert set(TABLE_MATERIALS) == {DEFAULT_TABLE_MATERIAL, *MATERIALS}
+    assert set(TABLE_MATERIALS) | set(FIXED_ONLY_TABLE_MATERIALS) == {DEFAULT_TABLE_MATERIAL, *MATERIALS}
 
 
 def test_draws_are_reproducible_and_independent_per_aspect():

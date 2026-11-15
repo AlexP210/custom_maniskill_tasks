@@ -116,9 +116,31 @@ class PlaceSphereFullHorizonEnv(
 class LiftPegUprightFullHorizonEnv(
     FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, LiftPegUprightEnv
 ):
-    """LiftPegUpright-v1 with no early termination and the `perturbations` kwarg."""
+    """LiftPegUpright-v1 with no early termination and the `perturbations` kwarg.
+
+    `peg_yaw` (degrees, default 0) turns the peg's start pose about the vertical through its centre:
+    the stock task always lays it along x with the red end towards the robot, so 180 puts the blue
+    end there instead. The start position draw is untouched, so the same seed gives the same spot.
+    Success is unaffected: `evaluate` accepts the peg standing on either end (checked).
+    """
 
     object_of_interest = "peg"
+
+    def __init__(self, *args, peg_yaw: float = 0.0, **kwargs):
+        self.peg_yaw = float(peg_yaw)
+        super().__init__(*args, **kwargs)
+
+    def _initialize_episode(self, env_idx, options):
+        super()._initialize_episode(env_idx, options)
+        if self.peg_yaw != 0.0:
+            from mani_skill.utils.geometry.rotation_conversions import quaternion_multiply
+            from mani_skill.utils.structs.pose import Pose
+
+            pose = self.peg.pose
+            p, q = pose.p[env_idx], pose.q[env_idx]
+            half = torch.deg2rad(torch.tensor(self.peg_yaw, device=q.device)) / 2
+            turn = torch.stack([torch.cos(half), *(torch.zeros_like(half),) * 2, torch.sin(half)]).expand_as(q)
+            self.peg.set_pose(Pose.create_from_pq(p=p, q=quaternion_multiply(turn, q)))
 
 
 @register_env(
