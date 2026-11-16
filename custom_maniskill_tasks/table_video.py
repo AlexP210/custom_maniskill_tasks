@@ -274,6 +274,13 @@ def build_table_video(env, spec: dict):
             builder.set_scene_idxs([i])
             builder.initial_pose = sapien.Pose([centre[0], centre[1], top_z - TABLE_VIDEO_PARKED_DEPTH])
             quads.append(builder.build_kinematic(name=f"table_video_{k}_{i}"))
+            # Kept out of the sim state: the quads are visual-only and their poses follow from the
+            # step counter, while `get_state_dict()` (which the S2P task wrapper calls on every
+            # reset and step) snapshots every registered actor through its own
+            # `cuda_rigid_body_data.torch()` view, each leaking ~2 KB of host memory in SAPIEN.
+            # At 256 envs x 200 frames that is 51k views per step: ~6 GB/h of training, and most
+            # of a step's time.
+            env.remove_from_state_dict_registry(quads[-1])
     actor = Actor.merge(quads, name="table_video")
     shown_z, parked_z = top_z + TABLE_VIDEO_LIFT, top_z - TABLE_VIDEO_PARKED_DEPTH
     return actor, centre, shown_z, parked_z, len(textures)
