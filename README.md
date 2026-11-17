@@ -23,6 +23,8 @@ Importing the package registers the ids this project's datasets are collected wi
 | `PickSingleYCB-v1.1` | `PickSingleYCB-v1` with no early termination |
 | `PushCube-v1.2`, `PlaceSphere-v1.2`, `LiftPegUpright-v1.2`, `PokeCube-v1.2`, `PickCube-v1.2`, `PickSingleYCB-v1.2` | the `-v1.1` task of the same name on the Franka Research 3, with the real robot's ZED mini wrist camera: see [FR3 and the ZED mini](#fr3-and-the-zed-mini-v12) |
 | `LiftPegUpright-v2` | `LiftPegUpright-v1.1` where the peg must stand on its *marked* end, told apart from the other end only by the markings' shape: see [The marked peg](#the-marked-peg-liftpegupright-v2) |
+| `PegInsertionSide-v1.1` | `PegInsertionSide-v1` with no early termination, on the plain `panda` (no wrist camera), with the scene camera `base_camera` moved high in front of the table so the distractor stations of v2 are in frame |
+| `PegInsertionSide-v2` | `PegInsertionSide-v1.1` with scripted Panda distractors beside the agent, each pick-and-placing a cube between two pads; `distractor_robots=["left"]`, `["right"]` or both (the default). See `peg_insertion.py` / `distractor_robots.py` |
 
 `PickSingleYCB-v1.1` is the one id whose scene is not fixed: the YCB object in it is drawn per
 parallel env at reconfiguration, and the stock task's own `reconfiguration_freq` default (1 at

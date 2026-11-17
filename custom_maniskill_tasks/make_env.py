@@ -43,6 +43,10 @@ TASKS_IN_USE = (
     "PickSingleYCB-v1.2",
     # LiftPegUpright-v1.1 with the peg to be stood on its marked end (see `marked_peg`)
     "LiftPegUpright-v2",
+    # PegInsertionSide minus early termination on the plain panda, and the same with scripted
+    # distractor robots beside the agent (see `peg_insertion`)
+    "PegInsertionSide-v1.1",
+    "PegInsertionSide-v2",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",

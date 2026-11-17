@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from mani_skill.utils import gym_utils
 
@@ -29,23 +30,23 @@ from ppo_visual_expert_fast import as_obs_td  # noqa: E402
 
 EXPERTS_DIR = Path("/data/AlexPleava/datasets/maniskill")
 
-# row title, task id.
+# row title (the paper's task names), task id.
 TASKS = (
-    ("PushCube-v1.1", "PushCube-v1.1"),
-    ("LiftPegUpright-v1.1", "LiftPegUpright-v1.1"),
-    ("PickCube-v1.1", "PickCube-v1.1"),
+    ("PushCube", "PushCube-v1.1"),
+    ("LiftPeg", "LiftPegUpright-v1.1"),
+    ("PickCube", "PickCube-v1.1"),
 )
 
-# column title, lighting preset. The first three columns are under the stock ("default")
-# condition; these are the start frame again, under each perturbation.
+# column title, `make_env` perturbations. The first three columns are under the stock ("default")
+# condition; these are the start frame again, under each perturbation -- the dicts the full-set
+# evals record for their bright-set-0.75-2.5, warm-set-1.1 and object-hue-30 presets.
 LIGHTING_COLUMNS = (
-    ("Bright", "bright-set-0.75-2.5"),
-    ("Warm", "warm-set-1.1"),
-    ("Colour-Shift", "object-hue-30"),
+    ("Bright", {"lighting": {"brightness": 2.5}}),
+    ("Warm", {"lighting": {"temperature": -1.1}}),
+    ("Colour-Shift", {"object_hue": {"degrees": 30.0}}),
 )
 FONT_SIZE = 38
-"""Column titles and row labels. The row labels break before the task version, since a one-line
-"LiftPegUpright-v1.1" at this size is taller than its row."""
+"""Column titles and row labels."""
 COLUMN_TITLES = ("Start", "Visual Obs", "Goal") + tuple(title for title, _ in LIGHTING_COLUMNS)
 """All but "Visual Obs" come from `env.render()`, i.e. each task's own `render_camera`
 (`_default_human_render_camera_configs`): the 512x512 three-quarter view ManiSkill's docs and
@@ -112,14 +113,14 @@ def render_expert_episode(task_id, cfg, seed, backends, device):
         env.close()
 
 
-def render_relit_start(cfg, seed, backends, lighting):
-    """The render-camera frame at the start of the same episode, under `lighting`.
+def render_relit_start(cfg, seed, backends, perturbations):
+    """The render-camera frame at the start of the same episode, under `perturbations`.
 
     Built through the same `build_env`, camera view and sim backend as the expert episode: the
     reset randomization draws from the sim device's torch generator, so a different backend would
     lay out a different scene from the same seed.
     """
-    env = build_env(cfg, 1, dict(backends, lighting=lighting))
+    env = build_env(cfg, 1, dict(backends, perturbations=perturbations))
     try:
         env.reset(seed=seed)
         return _render(env)
@@ -140,21 +141,32 @@ def main():
         "the same starting configuration",
     )
     parser.add_argument(
+        "--from-frames", action="store_true",
+        help="re-plot from the frames cached next to --out (<out>_frames.npz) instead of rendering",
+    )
+    parser.add_argument(
         "--device", default="cuda:0",
         help="torch device, which also pins the physx sim and the sapien renderer",
     )
     args = parser.parse_args()
 
-    device = torch.device(args.device)
-    backends = resolve_backends(device)
-    frames = {}
-    for row, (_, task_id) in enumerate(TASKS):
-        cfg = load_expert_config(task_id)
-        frames[row, 0], frames[row, 1], frames[row, 2] = render_expert_episode(
-            task_id, cfg, args.seed, backends, device
-        )
-        for col, (_, lighting) in enumerate(LIGHTING_COLUMNS, start=3):
-            frames[row, col] = render_relit_start(cfg, args.seed, backends, lighting)
+    cache = args.out.with_name(args.out.stem + "_frames.npz")
+    if args.from_frames:
+        with np.load(cache) as saved:
+            frames = {tuple(int(i) for i in key.split("_")): saved[key] for key in saved.files}
+    else:
+        device = torch.device(args.device)
+        backends = resolve_backends(device)
+        frames = {}
+        for row, (_, task_id) in enumerate(TASKS):
+            cfg = load_expert_config(task_id)
+            frames[row, 0], frames[row, 1], frames[row, 2] = render_expert_episode(
+                task_id, cfg, args.seed, backends, device
+            )
+            for col, (_, perturbations) in enumerate(LIGHTING_COLUMNS, start=3):
+                frames[row, col] = render_relit_start(cfg, args.seed, backends, perturbations)
+        np.savez_compressed(cache, **{f"{r}_{c}": np.asarray(f) for (r, c), f in frames.items()})
+        print(f"wrote {cache}")
 
     fig, axes = plt.subplots(
         len(TASKS), len(COLUMN_TITLES), figsize=(4 * len(COLUMN_TITLES), 4 * len(TASKS))
@@ -171,7 +183,7 @@ def main():
             if row == 0:
                 ax.set_title(title, fontsize=FONT_SIZE)
             if col == 0:
-                ax.set_ylabel(row_title.replace("-v", "\n-v"), fontsize=FONT_SIZE)
+                ax.set_ylabel(row_title, fontsize=FONT_SIZE)
 
     fig.tight_layout()
     # the frames are raster either way; dpi sets the resolution they are embedded at in the PDF

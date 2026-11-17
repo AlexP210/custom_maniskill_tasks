@@ -85,6 +85,13 @@ from custom_maniskill_tasks.marked_peg import (
     LiftPegUprightMarkedEnv,
     marking_pairs,
 )
+# PegInsertionSide-v1.1 / -v2 (scripted distractor robots beside the agent; see `peg_insertion`)
+from custom_maniskill_tasks.distractor_robots import STATIONS as DISTRACTOR_STATIONS, DistractorRobotsMixin
+from custom_maniskill_tasks.peg_insertion import (
+    PEG_INSERTION_TASKS,
+    PegInsertionSideDistractorEnv,
+    PegInsertionSideFullHorizonEnv,
+)
 from custom_maniskill_tasks.wrappers import (
     DINORewardWrapper,
     FrameSkip,
@@ -96,6 +103,11 @@ from custom_maniskill_tasks.wrappers import (
 )
 
 __all__ = [
+    "DISTRACTOR_STATIONS",
+    "DistractorRobotsMixin",
+    "PEG_INSERTION_TASKS",
+    "PegInsertionSideDistractorEnv",
+    "PegInsertionSideFullHorizonEnv",
     "BASE_MARKINGS",
     "MARKED_PEG_TASKS",
     "MARKINGS",

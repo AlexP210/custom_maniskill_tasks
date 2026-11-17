@@ -97,7 +97,8 @@ def _rotate_hue(linear_rgb: np.ndarray, degrees: float) -> np.ndarray:
 
 def _apply_object_hue(env, degrees: float) -> None:
     """Turn the colours of every task object in `env` `degrees` round the hue wheel: each scene
-    actor but the table scene's own (table and ground) and the lighting props, so the cube, the
+    actor but the table scene's own (table and ground), the lighting props and the distractor
+    robots' props (`distractor_robots`), so the cube, the
     goal target and site, the peg -- whatever the task built. The robot is an articulation, not an
     actor, and is untouched.
 
@@ -113,7 +114,8 @@ def _apply_object_hue(env, degrees: float) -> None:
     fixtures = set() if table_scene is None else {obj.name for obj in table_scene.scene_objects}
     edits = []
     for name, actor in env.scene.actors.items():
-        if name in fixtures or name.startswith("lighting_prop_"):
+        # distractor_robots' cubes and pads are scenery, not task objects
+        if name in fixtures or name.startswith(("lighting_prop_", "distractor_")):
             continue
         for entity in actor._objs:
             body = entity.find_component_by_type(sapien.render.RenderBodyComponent)
