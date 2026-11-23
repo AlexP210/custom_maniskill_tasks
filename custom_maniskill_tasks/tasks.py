@@ -32,6 +32,7 @@ from mani_skill.envs.tasks.tabletop.lift_peg_upright import LiftPegUprightEnv
 from mani_skill.envs.tasks.tabletop.pick_cube import PickCubeEnv
 from mani_skill.envs.tasks.tabletop.pick_single_ycb import PickSingleYCBEnv
 from mani_skill.envs.tasks.tabletop.place_sphere import PlaceSphereEnv
+from mani_skill.envs.tasks.tabletop.plug_charger import PlugChargerEnv
 from mani_skill.envs.tasks.tabletop.poke_cube import PokeCubeEnv
 from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
 from mani_skill.utils.registration import REGISTERED_ENVS, register_env
@@ -50,6 +51,7 @@ FULL_HORIZON_TASKS = {
     "PokeCube-v1.1": "PokeCube-v1",
     "PickCube-v1.1": "PickCube-v1",
     "PickSingleYCB-v1.1": "PickSingleYCB-v1",
+    "PlugCharger-v1.1": "PlugCharger-v1",
 }
 """Each registered variant and the stock task it derives from. The `-v1.1` suffix is not a
 gymnasium version (gymnasium only parses integer versions, so these are unversioned ids whose name
@@ -68,6 +70,25 @@ def _asset_download_ids(base_task: str) -> list[str]:
     fail deep inside the task's `__init__` (a missing json) instead of offering the download.
     """
     return REGISTERED_ENVS[base_task].asset_download_ids
+
+
+DEPRECATED_TASK_IDS: dict[str, str] = {}
+"""Each old task id and the id it was renamed to (2026-11-23). The old ids stay registered, as
+aliases of the same class with the same defaults, so recorded datasets (whose trajectory json names
+the id they were collected under), frozen run configs and resumed runs keep working. New configs
+should use the new names."""
+
+
+def register_alias(old_id: str, new_id: str) -> None:
+    """Register `old_id` as another name for the already registered `new_id`."""
+    spec = REGISTERED_ENVS[new_id]
+    register_env(
+        old_id,
+        max_episode_steps=spec.max_episode_steps,
+        asset_download_ids=spec.asset_download_ids,
+        **spec.default_kwargs,
+    )(spec.cls)
+    DEPRECATED_TASK_IDS[old_id] = new_id
 
 
 class FullHorizonMixin:
@@ -183,17 +204,59 @@ class PickSingleYCBFullHorizonEnv(
 
 
 # --------------------------------------------------------------------------- #
-# -v1.2: the same tasks on the Franka Research 3, with the real robot's wrist camera
+@register_env(
+    "PlugCharger-v1.1",
+    max_episode_steps=_horizon("PlugCharger-v1"),
+    control_mode=CONTROL_MODE,
+    reward_mode="sparse",
+)
+class PlugChargerFullHorizonEnv(
+    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PlugChargerEnv
+):
+    """PlugCharger-v1 with no early termination and the `perturbations` kwarg, observed through the
+    stock task's own `base_camera`.
+
+    Three differences from the other `-v1.1` ids, each forced by the stock task:
+
+    - **Sparse reward by default.** PlugCharger-v1 has no dense reward at all
+      (`SUPPORTED_REWARD_MODES = ["none", "sparse"]`), and with no `reward_mode` ManiSkill falls back
+      to the first one, "none": a reward of 0 on every step, silently. The registration default is
+      "sparse" (1 while the charger is plugged in) instead.
+    - **The plain `panda`, not `panda_wristcam`.** The stock task only lists the wrist-camera Panda,
+      which renders a `hand_camera` into every observation; this id is observed through the scene
+      camera, so the wrist camera is dropped rather than rendered for nothing (as on
+      PegInsertionSide-v1.1). The start pose is unchanged: the stock task sets it only for
+      `panda_wristcam`, and the table scene's `panda` pose is the same joint vector with the same
+      noise. `camera_view="wrist"` still works through `make_env`.
+    - **`table_scene`.** The stock task calls its table scene `scene_builder`; the lighting,
+      table-material and appearance perturbations look for `table_scene`, so it is aliased.
+
+    The stock 200-step horizon is carried over.
+    """
+
+    SUPPORTED_ROBOTS = ["panda", "panda_wristcam"]
+    object_of_interest = "charger"
+
+    def __init__(self, *args, robot_uids="panda", **kwargs):
+        super().__init__(*args, robot_uids=robot_uids, **kwargs)
+
+    @property
+    def table_scene(self):
+        # set in _load_scene; before that, AttributeError, so `getattr(env, "table_scene", None)` is None
+        return self.scene_builder
+
+
+# -FR3 (formerly -v1.2): the same tasks on the Franka Research 3, with the real robot's wrist camera
 # --------------------------------------------------------------------------- #
 FR3_TASKS = {
-    "PushCube-v1.2": ("PushCube-v1.1", PushCubeFullHorizonEnv),
-    "PlaceSphere-v1.2": ("PlaceSphere-v1.1", PlaceSphereFullHorizonEnv),
-    "LiftPegUpright-v1.2": ("LiftPegUpright-v1.1", LiftPegUprightFullHorizonEnv),
-    "PokeCube-v1.2": ("PokeCube-v1.1", PokeCubeFullHorizonEnv),
-    "PickCube-v1.2": ("PickCube-v1.1", PickCubeFullHorizonEnv),
-    "PickSingleYCB-v1.2": ("PickSingleYCB-v1.1", PickSingleYCBFullHorizonEnv),
+    "PushCube-FR3": ("PushCube-v1.1", PushCubeFullHorizonEnv),
+    "PlaceSphere-FR3": ("PlaceSphere-v1.1", PlaceSphereFullHorizonEnv),
+    "LiftPegUpright-FR3": ("LiftPegUpright-v1.1", LiftPegUprightFullHorizonEnv),
+    "PokeCube-FR3": ("PokeCube-v1.1", PokeCubeFullHorizonEnv),
+    "PickCube-FR3": ("PickCube-v1.1", PickCubeFullHorizonEnv),
+    "PickSingleYCB-FR3": ("PickSingleYCB-v1.1", PickSingleYCBFullHorizonEnv),
 }
-"""Each `-v1.2` id with the `-v1.1` id and class it derives from. Same scene, dynamics, reward,
+"""Each `-FR3` id with the `-v1.1` id and class it derives from. Same scene, dynamics, reward,
 success predicate, horizon, control mode and `perturbations` kwarg as the `-v1.1` task; what changes is
 the robot (a Franka Research 3, `fr3.FR3`) and, under `camera_view="wrist"`, the camera (the ZED
 mini on the real robot, `fr3.FR3_ZED_RIG`, rendered at the 224 x 224 the policy is given)."""
@@ -212,3 +275,6 @@ for _id, (_base_id, _base_cls) in FR3_TASKS.items():
             {"__doc__": f"{_base_id} on the Franka Research 3 (see `fr3`)."},
         )
     )
+
+for _id in FR3_TASKS:
+    register_alias(_id.replace("-FR3", "-v1.2"), _id)

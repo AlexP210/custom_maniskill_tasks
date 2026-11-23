@@ -35,18 +35,24 @@ TASKS_IN_USE = (
     "PickSingleYCB-v1.1",
     # the same on the Franka Research 3 with the real robot's ZED mini wrist camera (see `fr3`),
     # for sim-to-real; these ones want camera_view="wrist"
-    "PushCube-v1.2",
-    "PlaceSphere-v1.2",
-    "LiftPegUpright-v1.2",
-    "PokeCube-v1.2",
-    "PickCube-v1.2",
-    "PickSingleYCB-v1.2",
+    "PushCube-FR3",
+    "PlaceSphere-FR3",
+    "LiftPegUpright-FR3",
+    "PokeCube-FR3",
+    "PickCube-FR3",
+    "PickSingleYCB-FR3",
     # LiftPegUpright-v1.1 with the peg to be stood on its marked end (see `marked_peg`)
-    "LiftPegUpright-v2",
-    # PegInsertionSide minus early termination on the plain panda, and the same with scripted
-    # distractor robots beside the agent (see `peg_insertion`)
+    "LiftPegUpright-HarderPerception",
+    # PegInsertionSide minus early termination on the plain panda, 5-D pd_ee_delta_pos_yaw control
+    # (see `peg_insertion`, `controllers`)
     "PegInsertionSide-v1.1",
-    "PegInsertionSide-v2",
+    # PlugCharger minus early termination, on the stock scene camera, sparse reward (see `tasks`)
+    "PlugCharger-v1.1",
+    # -v1.1 tasks with scripted distractor robots beside the agent, seen through the shared front
+    # camera, plus an optional video backdrop (see `distractor_scene`, `distractor_tasks`)
+    "PegInsertionSide-MultiArmDistractors",
+    "LiftPegUpright-MultiArmDistractors",
+    "PickCube-MultiArmDistractors",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",
@@ -56,14 +62,15 @@ TASKS_IN_USE = (
     "PokeCube-v1",
 )
 """The tasks this project has datasets and configs for. Documentation, not a restriction:
-`make_env` works for any registered ManiSkill task id."""
+`make_env` works for any registered ManiSkill task id, including the deprecated aliases in
+`tasks.DEPRECATED_TASK_IDS`."""
 
 
 def make_env(
     task_name: str,
     *,
     obs_mode: str = "rgb",
-    control_mode: str | None = "pd_ee_delta_pos",
+    control_mode: str | None = "task",
     num_envs: int = 1,
     camera_view: str = "default",
     perturbations: Mapping[str, Any] | None = None,
@@ -97,9 +104,12 @@ def make_env(
             `-v1.1` ids are this project's own (registered by importing this package): the stock
             tasks with early termination removed, which is how every offline dataset here was
             collected. On those, `ignore_terminations` is already true of the task itself.
-        obs_mode, control_mode, num_envs: passed to `gym.make`. `control_mode` defaults to the
-            one every recorded dataset in this project uses; a policy run under a different
-            control mode than its data was recorded with is a silent failure. `control_mode=None`
+        obs_mode, control_mode, num_envs: passed to `gym.make`. `control_mode="task"` (the
+            default) is the task id's registered default where it has one (`pd_ee_delta_pos` on
+            every `-v1.1` id but PegInsertionSide's 5-D `pd_ee_delta_pos_yaw`), and otherwise (the
+            stock `-v1` ids) `pd_ee_delta_pos`, the one every recorded dataset in this project
+            uses; a policy run under a different control mode than its data was recorded with is a
+            silent failure. `control_mode=None`
             means "whatever the task id already defaults to" and is not forwarded, since
             `gym.make(control_mode=None)` would override a registration default (the `-v1.1` ids
             carry one) rather than defer to it.
@@ -157,6 +167,10 @@ def make_env(
     sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid, rig)
     sensor_configs.update(env_kwargs.pop("sensor_configs", {}) or {})
 
+    if control_mode == "task":
+        from mani_skill.utils.registration import REGISTERED_ENVS
+
+        control_mode = REGISTERED_ENVS[task_name].default_kwargs.get("control_mode", "pd_ee_delta_pos")
     if control_mode is not None:
         env_kwargs["control_mode"] = control_mode
     if view == "wrist" and rig.wrist_robot_uid is not None:

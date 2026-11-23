@@ -1,4 +1,4 @@
-"""`LiftPegUpright-v2`, the marked peg: `python tests/test_marked_peg.py`.
+"""`LiftPegUpright-HarderPerception`, the marked peg: `python tests/test_marked_peg.py`.
 
 physx_cpu at num_envs=1 throughout, since sapien can only enable GPU PhysX once per process.
 """
@@ -13,7 +13,7 @@ import custom_maniskill_tasks  # noqa: F401  (registers the ids under test)
 from custom_maniskill_tasks import BASE_MARKINGS, MARKINGS, TOP_MARKINGS, marking_pairs
 from mani_skill.utils.geometry import rotation_conversions
 
-TASK = "LiftPegUpright-v2"
+TASK = "LiftPegUpright-HarderPerception"
 
 
 def _make(**kwargs):

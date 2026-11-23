@@ -2,10 +2,12 @@
 
 Importing this package registers the task ids this project's datasets were collected with --
 `PushCube-v1.1`, `PlaceSphere-v1.1`, `LiftPegUpright-v1.1`, `PokeCube-v1.1`, `PickCube-v1.1` and
-`PickSingleYCB-v1.1`, the stock tasks with early termination removed (see `tasks`), and the
-`-v1.2` ids of the same six on the Franka Research 3 with the real robot's ZED mini wrist camera (see
-`fr3`). They are then
-available to plain `gym.make`, not only to `make_env`.
+`PickSingleYCB-v1.1`, the stock tasks with early termination removed (see `tasks`), the `-FR3` ids
+of the same six on the Franka Research 3 with the real robot's ZED mini wrist camera (see `fr3`),
+and the `-HarderPerception` and `-MultiArmDistractors` variants. Old ids renamed on 2026-11-23
+(`-v1.2`, `LiftPegUpright-v2`/`-v3`, `PickCube-v2`, `PegInsertionSide-v2`) stay registered as
+aliases, listed in `DEPRECATED_TASK_IDS`. They are then available to plain `gym.make`, not only to
+`make_env`.
 
 `make_env` is the entry point; everything else is exported for the callers that build part of a
 stack themselves (a dataset replay that needs `sensor_configs` for `RecordEpisode`, an agent that
@@ -63,20 +65,24 @@ from custom_maniskill_tasks.table_material import (
 )
 from custom_maniskill_tasks.viewpoint import ViewpointConfig, check_viewpoint
 
-# imported for its side effect: registering the -v1.1 and -v1.2 task ids with ManiSkill and gymnasium
+# imported for its side effect: adding the 5-D pd_ee_delta_pos_yaw control mode to the Panda
+from custom_maniskill_tasks.controllers import YAW_CONTROL_MODE
+# imported for its side effect: registering the -v1.1 and -FR3 task ids with ManiSkill and gymnasium
 from custom_maniskill_tasks.tasks import (
     CONTROL_MODE,
+    DEPRECATED_TASK_IDS,
     FR3_TASKS,
     FULL_HORIZON_TASKS,
     FullHorizonMixin,
     LiftPegUprightFullHorizonEnv,
     PickCubeFullHorizonEnv,
     PickSingleYCBFullHorizonEnv,
+    PlugChargerFullHorizonEnv,
     PlaceSphereFullHorizonEnv,
     PokeCubeFullHorizonEnv,
     PushCubeFullHorizonEnv,
 )
-# LiftPegUpright-v2: stand the peg on its marked end (see `marked_peg`)
+# LiftPegUpright-HarderPerception: stand the peg on its marked end (see `marked_peg`)
 from custom_maniskill_tasks.marked_peg import (
     BASE_MARKINGS,
     MARKED_PEG_TASKS,
@@ -85,12 +91,29 @@ from custom_maniskill_tasks.marked_peg import (
     LiftPegUprightMarkedEnv,
     marking_pairs,
 )
-# PegInsertionSide-v1.1 / -v2 (scripted distractor robots beside the agent; see `peg_insertion`)
+# PegInsertionSide-v1.1 / -MultiArmDistractors (scripted distractor robots beside the agent); see
+# `peg_insertion`. Every -MultiArmDistractors id also takes `background_video` (see `backdrop_video`)
 from custom_maniskill_tasks.distractor_robots import STATIONS as DISTRACTOR_STATIONS, DistractorRobotsMixin
 from custom_maniskill_tasks.peg_insertion import (
     PEG_INSERTION_TASKS,
     PegInsertionSideDistractorEnv,
+    PEG_INSERTION_CONTROL_MODE,
     PegInsertionSideFullHorizonEnv,
+)
+from custom_maniskill_tasks.backdrop_video import BackdropVideoMixin
+# the shared distractor scene, and distractor versions of other -v1.1 tasks (LiftPegUpright-, PickCube-MultiArmDistractors)
+from custom_maniskill_tasks.distractor_scene import (
+    SCENE_CAMERA_EYE,
+    SCENE_CAMERA_FOV,
+    SCENE_CAMERA_TARGET,
+    SceneCameraMixin,
+    distractor_task,
+)
+from custom_maniskill_tasks.distractor_tasks import (
+    DISTRACTOR_TASK_CLASSES,
+    DISTRACTOR_TASKS,
+    LiftPegUprightDistractorEnv,
+    PickCubeDistractorEnv,
 )
 from custom_maniskill_tasks.wrappers import (
     DINORewardWrapper,
@@ -104,9 +127,22 @@ from custom_maniskill_tasks.wrappers import (
 
 __all__ = [
     "DISTRACTOR_STATIONS",
+    "DISTRACTOR_TASKS",
+    "DISTRACTOR_TASK_CLASSES",
+    "LiftPegUprightDistractorEnv",
+    "PickCubeDistractorEnv",
+    "SCENE_CAMERA_EYE",
+    "SCENE_CAMERA_FOV",
+    "SCENE_CAMERA_TARGET",
+    "SceneCameraMixin",
+    "distractor_task",
     "DistractorRobotsMixin",
     "PEG_INSERTION_TASKS",
     "PegInsertionSideDistractorEnv",
+    "PEG_INSERTION_CONTROL_MODE",
+    "DEPRECATED_TASK_IDS",
+    "YAW_CONTROL_MODE",
+    "BackdropVideoMixin",
     "PegInsertionSideFullHorizonEnv",
     "BASE_MARKINGS",
     "MARKED_PEG_TASKS",
@@ -156,6 +192,7 @@ __all__ = [
     "PandaHandCam",
     "PickCubeFullHorizonEnv",
     "PickSingleYCBFullHorizonEnv",
+    "PlugChargerFullHorizonEnv",
     "PlaceSphereFullHorizonEnv",
     "PokeCubeFullHorizonEnv",
     "PushCubeFullHorizonEnv",

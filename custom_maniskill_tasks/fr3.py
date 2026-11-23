@@ -1,4 +1,4 @@
-"""The Franka Research 3 and the ZED mini on it, as `-v1.2` tasks see them.
+"""The Franka Research 3 and the ZED mini on it, as `-FR3` tasks (formerly `-v1.2`) see them.
 
 ManiSkill has no FR3, so this builds one from Franka's own `franka_description` (the URDF and
 meshes under `assets/fr3`, see `assets/fr3/build_fr3_assets.py`). It has the same seven joints,

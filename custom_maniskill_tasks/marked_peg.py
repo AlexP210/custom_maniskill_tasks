@@ -1,7 +1,8 @@
-"""`LiftPegUpright-v2`: stand the peg on its *marked* end, where only the marking's shape says which.
+"""`LiftPegUpright-HarderPerception` (formerly `LiftPegUpright-v2`, still registered as an alias):
+stand the peg on its *marked* end, where only the marking's shape says which.
 
 `LiftPegUpright-v1.1` can be solved from colour alone: the peg is a red/blue box on a wood table,
-it always starts lying along the world x-axis, and either end may go down. v2 makes success hinge
+it always starts lying along the world x-axis, and either end may go down. This task makes success hinge
 on a visual feature colour cannot give away:
 
 - **Markings, not colours, tell the ends apart.** The peg is one colour all over. Each end carries
@@ -67,7 +68,7 @@ from custom_maniskill_tasks.lighting import LightingMixin
 from custom_maniskill_tasks.perturbation_classes import SPLITS, resolve_perturbations
 from custom_maniskill_tasks.perturbation_mixin import PerturbationClassesMixin
 from custom_maniskill_tasks.table_material import TableMaterialMixin
-from custom_maniskill_tasks.tasks import CONTROL_MODE, FullHorizonMixin, _horizon
+from custom_maniskill_tasks.tasks import CONTROL_MODE, FullHorizonMixin, _horizon, register_alias
 
 # --------------------------------------------------------------------------- #
 # markings
@@ -241,7 +242,7 @@ class _MarkedPegScene(LiftPegUprightEnv):
 
 
 @register_env(
-    "LiftPegUpright-v2",
+    "LiftPegUpright-HarderPerception",
     max_episode_steps=_horizon("LiftPegUpright-v1"),
     control_mode=CONTROL_MODE,
 )
@@ -330,5 +331,7 @@ class LiftPegUprightMarkedEnv(
         return self.compute_dense_reward(obs=obs, action=action, info=info) / 3.0
 
 
-MARKED_PEG_TASKS = {"LiftPegUpright-v2": "LiftPegUpright-v1.1"}
+MARKED_PEG_TASKS = {"LiftPegUpright-HarderPerception": "LiftPegUpright-v1.1"}
+
+register_alias("LiftPegUpright-v2", "LiftPegUpright-HarderPerception")
 """Each task here and the `-v1.1` task it changes."""

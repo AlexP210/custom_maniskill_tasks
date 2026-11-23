@@ -39,7 +39,7 @@ RED = (230, 60, 60)
 # A parameter that does nothing at the others' neutral values is swept with these held instead,
 # and its row label says so: the table's specular shows only on wood made less metallic.
 ROW_CONTEXT = {("table_visual_material", "specular"): {"metallic_reduction": 0.8}}
-SHORT_NAMES ={"LiftPegUpright-v1.1": "lift_peg", "PushCube-v1.1": "push_cube", "PushCube-v1.2": "push_cube_fr3",
+SHORT_NAMES ={"LiftPegUpright-v1.1": "lift_peg", "PushCube-v1.1": "push_cube", "PushCube-FR3": "push_cube_fr3",
                "PickCube-v1.1": "pick_cube", "PlaceSphere-v1.1": "place_sphere"}
 
 

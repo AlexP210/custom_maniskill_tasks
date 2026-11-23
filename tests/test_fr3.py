@@ -1,4 +1,4 @@
-"""The `-v1.2` ids, the Franka Research 3 and its ZED mini: `python tests/test_fr3.py [test_name ...]`.
+"""The `-FR3` ids (formerly `-v1.2`), the Franka Research 3 and its ZED mini: `python tests/test_fr3.py [test_name ...]`.
 
 physx_cpu at num_envs=1 throughout. With no arguments each test runs in a subprocess of its own,
 because sapien's Vulkan renderer stops finding its device after about eight scenes have been built
@@ -41,7 +41,7 @@ def _rotation(pose: sapien.Pose) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 def test_ids_are_registered_and_derive_from_v1_1():
     for task, (base, base_cls) in FR3_TASKS.items():
-        assert task.endswith("-v1.2") and base.endswith("-v1.1")
+        assert task.endswith("-FR3") and base.endswith("-v1.1")
         assert task in REGISTERED_ENVS and task in gym.registry, task
         spec, base_spec = REGISTERED_ENVS[task], REGISTERED_ENVS[base]
         assert issubclass(spec.cls, base_cls), "same task underneath"
@@ -55,11 +55,11 @@ def test_ids_are_registered_and_derive_from_v1_1():
 
 def test_a_v1_2_task_cannot_be_built_on_another_robot():
     try:
-        gym.make("PushCube-v1.2", robot_uids="panda")
+        gym.make("PushCube-FR3", robot_uids="panda")
     except ValueError as error:
         assert "FR3 variant" in str(error)
     else:
-        raise AssertionError("PushCube-v1.2 built on a panda")
+        raise AssertionError("PushCube-FR3 built on a panda")
 
 
 # --------------------------------------------------------------------------- #
@@ -106,7 +106,7 @@ RESET_POSE_TESTS = [_reset_pose_test(task) for task in FR3_TASKS]
 
 
 def test_the_robot_is_the_fr3():
-    env = make_env("PushCube-v1.2", obs_mode="state")
+    env = make_env("PushCube-FR3", obs_mode="state")
     env.reset(seed=0)
     agent = env.unwrapped.agent
     assert env.unwrapped.robot_uids == "fr3" and type(agent) is fr3.FR3
@@ -144,17 +144,17 @@ def test_pick_cube_reward_is_computed_as_for_a_panda():
     PickCubeEnv.compute_dense_reward = spy
     try:
         rewards = {}
-        for task in ("PickCube-v1.1", "PickCube-v1.2"):
+        for task in ("PickCube-v1.1", "PickCube-FR3"):
             env = make_env(task, obs_mode="state", robot_init_qpos_noise=0.0, reward_wrappers=())
             env.reset(seed=1)
             rewards[task] = float(_scalar(env.step(ZERO_ACTION)[1]))
-            expected = "fr3" if task.endswith("1.2") else "panda"
+            expected = "fr3" if task.endswith("-FR3") else "panda"
             assert env.unwrapped.robot_uids == expected, "the swap must not outlive the hook"
             env.close()
     finally:
         PickCubeEnv.compute_dense_reward = original
     assert set(seen) == {"panda"}, seen
-    assert abs(rewards["PickCube-v1.1"] - rewards["PickCube-v1.2"]) < 5e-3, rewards
+    assert abs(rewards["PickCube-v1.1"] - rewards["PickCube-FR3"]) < 5e-3, rewards
 
 
 # --------------------------------------------------------------------------- #
@@ -176,7 +176,7 @@ def test_extrinsics_are_the_real_mounts():
 def test_intrinsics_are_the_real_cameras_at_224():
     assert np.isclose(np.degrees(fr3.ZED_HFOV), 82.504, atol=1e-3), "the SDK calibration's HFOV"
     assert np.isclose(np.degrees(FR3_ZED_RIG.fov), 52.517, atol=1e-3)
-    env = make_env("PushCube-v1.2", camera_view="wrist")
+    env = make_env("PushCube-FR3", camera_view="wrist")
     obs, _ = env.reset(seed=0)
     assert set(obs["sensor_data"]) == {"hand_camera"}, "only the wrist camera under wrist_only"
     assert obs["sensor_data"]["hand_camera"]["rgb"].shape == (1, 224, 224, 3)
@@ -194,7 +194,7 @@ def test_intrinsics_are_the_real_cameras_at_224():
 
 
 def test_the_nominal_pose_is_where_the_camera_is_at_reset():
-    env = make_env("PushCube-v1.2", camera_view="wrist", robot_init_qpos_noise=0.0)
+    env = make_env("PushCube-FR3", camera_view="wrist", robot_init_qpos_noise=0.0)
     env.reset(seed=5)
     pose = env.unwrapped._sensors["hand_camera"].camera.global_pose
     position, rotation = wrist_camera_world_pose(ViewpointConfig(rig=FR3_ZED_RIG))
@@ -205,11 +205,11 @@ def test_the_nominal_pose_is_where_the_camera_is_at_reset():
 
 
 def test_the_wrist_robot_is_chosen_by_the_view():
-    default = make_env("PushCube-v1.2", obs_mode="rgb", camera_view="default")
+    default = make_env("PushCube-FR3", obs_mode="rgb", camera_view="default")
     assert default.unwrapped.robot_uids == "fr3"
     assert "hand_camera" not in default.unwrapped._sensors, "only the wrist view pays for the camera"
     default.close()
-    wrist = make_env("PushCube-v1.2", obs_mode="rgb", camera_view="wrist")
+    wrist = make_env("PushCube-FR3", obs_mode="rgb", camera_view="wrist")
     assert wrist.unwrapped.robot_uids == "fr3_zed"
     assert wrist.unwrapped.spec.kwargs["robot_uids"] == "fr3_zed", "recorded, so a replay builds the same robot"
     wrist.close()
@@ -220,7 +220,7 @@ def test_the_wrist_robot_is_chosen_by_the_view():
 # --------------------------------------------------------------------------- #
 def test_viewpoint_shifts_the_zed_and_not_the_panda():
     config = {"viewpoint": {"forward": -2, "pitch": 5, "fov": 50}}
-    env = make_env("PushCube-v1.2", camera_view="wrist", perturbations=config)
+    env = make_env("PushCube-FR3", camera_view="wrist", perturbations=config)
     env.reset(seed=0)  # make_env already checked the built pose and fov against the draw
     drawn = env.unwrapped.episode_perturbations["viewpoint"]
     assert drawn["fov"] == 50 and drawn["forward"] == -2
@@ -229,7 +229,7 @@ def test_viewpoint_shifts_the_zed_and_not_the_panda():
     env.close()
     # the fov range follows the rig: 108 is the Panda's own, and outside the ZED's
     try:
-        make_env("PushCube-v1.2", camera_view="wrist", perturbations={"viewpoint": {"fov": 108}})
+        make_env("PushCube-FR3", camera_view="wrist", perturbations={"viewpoint": {"fov": 108}})
     except ValueError as error:
         assert "outside its range" in str(error)
     else:
@@ -240,7 +240,7 @@ def test_viewpoint_shifts_the_zed_and_not_the_panda():
 
 
 def test_the_neutral_fov_is_the_zeds_own():
-    env = make_env("PushCube-v1.2", camera_view="wrist", perturbations={"viewpoint": {"fov": 52.517, "pitch": 3}})
+    env = make_env("PushCube-FR3", camera_view="wrist", perturbations={"viewpoint": {"fov": 52.517, "pitch": 3}})
     env.reset(seed=0)
     assert np.isclose(np.degrees(env.unwrapped._sensors["hand_camera"].config.fov), 52.517, atol=1e-3)
     env.close()

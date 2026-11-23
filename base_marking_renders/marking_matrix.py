@@ -1,4 +1,4 @@
-"""Every (base, decoy) marking pair of `LiftPegUpright-v2`, as the wrist camera sees it.
+"""Every (base, decoy) marking pair of `LiftPegUpright-HarderPerception`, as the wrist camera sees it.
 
     python base_marking_renders/marking_matrix.py [--colours fixed|random] [--resolution 224] [--seed N]
 
@@ -65,7 +65,7 @@ def main():
     label = lambda m: f"{m} *" if m in held_out else m
 
     env = make_env(
-        "LiftPegUpright-v2", obs_mode="rgb", camera_view="wrist", camera_resolution=args.resolution,
+        "LiftPegUpright-HarderPerception", obs_mode="rgb", camera_view="wrist", camera_resolution=args.resolution,
         frame_skip=1, n_frames=1, sim_backend="physx_cpu", markings="full", colours=args.colours,
     )
     robot = robot_state(env, args.seed)
@@ -82,7 +82,7 @@ def main():
                 ax.set_ylabel(f"base: {label(base)}", fontsize=11)
     env.close()
     fig.suptitle(
-        f"LiftPegUpright-v2: every base x decoy marking pair, wrist camera at {args.resolution} px "
+        f"LiftPegUpright-HarderPerception: every base x decoy marking pair, wrist camera at {args.resolution} px "
         f"({args.colours} colours)\nbase end at +x in every frame; * = held out for evaluation",
         fontsize=12,
     )

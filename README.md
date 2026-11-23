@@ -21,10 +21,34 @@ Importing the package registers the ids this project's datasets are collected wi
 | `PokeCube-v1.1` | `PokeCube-v1` with no early termination |
 | `PickCube-v1.1` | `PickCube-v1` with no early termination |
 | `PickSingleYCB-v1.1` | `PickSingleYCB-v1` with no early termination |
-| `PushCube-v1.2`, `PlaceSphere-v1.2`, `LiftPegUpright-v1.2`, `PokeCube-v1.2`, `PickCube-v1.2`, `PickSingleYCB-v1.2` | the `-v1.1` task of the same name on the Franka Research 3, with the real robot's ZED mini wrist camera: see [FR3 and the ZED mini](#fr3-and-the-zed-mini-v12) |
-| `LiftPegUpright-v2` | `LiftPegUpright-v1.1` where the peg must stand on its *marked* end, told apart from the other end only by the markings' shape: see [The marked peg](#the-marked-peg-liftpegupright-v2) |
-| `PegInsertionSide-v1.1` | `PegInsertionSide-v1` with no early termination, on the plain `panda` (no wrist camera), with the scene camera `base_camera` moved high in front of the table so the distractor stations of v2 are in frame |
-| `PegInsertionSide-v2` | `PegInsertionSide-v1.1` with scripted Panda distractors beside the agent, each pick-and-placing a cube between two pads; `distractor_robots=["left"]`, `["right"]` or both (the default). See `peg_insertion.py` / `distractor_robots.py` |
+| `PlugCharger-v1.1` | `PlugCharger-v1` with no early termination, on the plain `panda` (stock `base_camera` only, no wrist camera), **sparse reward by default** (the stock task has no dense reward, and its fallback `"none"` is 0 every step). Stock 200-step horizon |
+| `PegInsertionSide-v1.1` | `PegInsertionSide-v1` with no early termination, on the plain `panda` with the stock `base_camera` only (no wrist camera). Stock geometry (box turned up to 22.5°, 3 mm clearance). Default control mode **`pd_ee_delta_pos_yaw`** (5-D: xyz, yaw, gripper; see [Yaw control](#yaw-control-pd_ee_delta_pos_yaw)), unlike the other ids' 4-D `pd_ee_delta_pos`, since only a hand that can turn can match the box's angle |
+| `PushCube-FR3`, `PlaceSphere-FR3`, `LiftPegUpright-FR3`, `PokeCube-FR3`, `PickCube-FR3`, `PickSingleYCB-FR3` | the `-v1.1` task of the same name on the Franka Research 3, with the real robot's ZED mini wrist camera: see [FR3 and the ZED mini](#fr3-and-the-zed-mini--fr3) |
+| `LiftPegUpright-HarderPerception` | `LiftPegUpright-v1.1` where the peg must stand on its *marked* end, told apart from the other end only by the markings' shape: see [The marked peg](#the-marked-peg-liftpegupright-harderperception) |
+| `PegInsertionSide-MultiArmDistractors` | `PegInsertionSide-v1.1` (same 5-D control) with scripted Panda distractors beside the agent and the scene camera moved in front of the table, looking down at 30°, so all three robots are in frame; each pick-and-placing a cube between two pads; `distractor_robots=["left"]`, `["right"]` or both (the default), `[]` for the control scene. See `peg_insertion.py` / `distractor_robots.py` |
+| `LiftPegUpright-MultiArmDistractors` | `LiftPegUpright-v1.1` in the same distractor scene (plain `panda`, front `base_camera`, scripted distractors, `distractor_robots` as there). Built by `distractor_scene.distractor_task`; add other tasks in `distractor_tasks.py` |
+| `PickCube-MultiArmDistractors` | `PickCube-v1.1` in the same distractor scene, with the distractors carrying copies of the task's red cube and no pads drawn. The goal marker stays hidden, so the target is only in `goal_pos`. 50 steps; distractors start within 5 steps |
+
+Every `-MultiArmDistractors` id also takes `background_video` (default `None`): a clip path, or
+`{"path", "frames", "brightness"}`, for a looping video wall behind the scene (`backdrop_video.py`),
+e.g. `/data/AlexPleava/datasets/distractor_videos/factory_backdrop.mp4`. It switches independently
+of `distractor_robots` and does not change the task's draws.
+
+**Renamed ids (2026-11-23).** The old version-number ids stay registered as aliases of the same
+class with the same defaults (`DEPRECATED_TASK_IDS`), so recorded datasets, frozen run configs and
+resumed runs that name them still build:
+
+| old id | new id |
+| --- | --- |
+| `<Task>-v1.2` (all six) | `<Task>-FR3` |
+| `LiftPegUpright-v2` | `LiftPegUpright-HarderPerception` |
+| `LiftPegUpright-v3` | `LiftPegUpright-MultiArmDistractors` |
+| `PickCube-v2` | `PickCube-MultiArmDistractors` |
+| `PegInsertionSide-v2` | `PegInsertionSide-MultiArmDistractors` (now 5-D control, was 4-D) |
+
+`PegInsertionSide-v3` (fixed hole axis and 1 cm clearance for position-only control, wrist camera,
+randomized layout) was removed the same day, with no alias: yaw control makes the stock geometry
+solvable, and its video backdrop moved to every `-MultiArmDistractors` id.
 
 `PickSingleYCB-v1.1` is the one id whose scene is not fixed: the YCB object in it is drawn per
 parallel env at reconfiguration, and the stock task's own `reconfiguration_freq` default (1 at
@@ -43,8 +67,8 @@ goal, so it runs the full 50-step horizon and holding the goal early earns stric
 reward. Baking it into the task id means nothing downstream has to remember the flag, and a
 recorded trajectory's `env_id` says which convention produced it. `info["success"]` is untouched;
 scene, dynamics, reward and success predicate are the stock task's, asserted in
-`tests/test_tasks.py`. `control_mode` defaults to the `pd_ee_delta_pos` every recording used, and an
-explicit `gym.make(..., control_mode=...)` still wins.
+`tests/test_tasks.py`. `control_mode` defaults to the `pd_ee_delta_pos` every recording used (PegInsertionSide's ids:
+`pd_ee_delta_pos_yaw`), and an explicit `gym.make(..., control_mode=...)` still wins.
 
 These ids also take `perturbations`, which changes how the scene looks (see
 [Perturbations](#perturbations)) and which the stock `-v1` ids do not.
@@ -61,6 +85,25 @@ ids. `tools/ppo_stages_fast.py` (which collects the datasets) and `tools/replay_
 (which converts them) both import this package, so both accept a `-v1.1` task; anything else that
 should needs the same import. Datasets recorded so far name the stock `-v1` ids and replay
 unchanged.
+
+## Yaw control (pd_ee_delta_pos_yaw)
+
+Importing the package adds one control mode to ManiSkill's Panda (`controllers.py`; every stock mode
+is unchanged): `pd_ee_delta_pos_yaw`, 5-D `(dx, dy, dz, dyaw, gripper)`. The hand is held pointing
+straight down and only its yaw about the vertical is controlled -- the one rotation a top-down
+grasp needs, without the roll and pitch of the 7-D `pd_ee_delta_pose` that no tabletop task here
+uses. Each step the target is the current TCP pose moved by the position delta and turned by
+`dyaw` (anticlockwise seen from above), with roll and pitch snapped back to vertical, so contact
+can't tilt the hand a bit at a time. Bounds are `pd_ee_delta_pose`'s (0.1 m and 0.1 rad per step at
+an action of 1; the arm tracks ~0.04 rad per step, as the stock delta controllers lag likewise).
+
+It is PegInsertionSide's default: with position-only control a grasped peg always lies along y and
+only ~1 stock layout in 10 can be inserted at all. A closed-loop scripted policy in this action
+space solves 15/20 stock layouts within 200 steps (11/20 within the 100-step horizon, median 80),
+so evaluate PegInsertionSide for its full 100 steps rather than 50.
+
+`make_env`'s `control_mode` defaults to `"task"`: the id's registered default where it has one,
+else `pd_ee_delta_pos` (the stock `-v1` ids, which would otherwise get joint control).
 
 ## Perturbations
 
@@ -212,15 +255,15 @@ place on the next step. A frame buffer that stored the tensor would hold N refer
 current frame and stack it with itself — an env that looks fine until a model is asked to infer
 motion from it. `tests/test_make_env.py::test_image_frames_are_not_aliased` guards this.
 
-## FR3 and the ZED mini (v1.2)
+## FR3 and the ZED mini (-FR3)
 
-For sim-to-real: the `-v1.2` ids are the `-v1.1` tasks (same scene, dynamics, reward, success
+For sim-to-real: the `-FR3` ids (formerly `-v1.2`) are the `-v1.1` tasks (same scene, dynamics, reward, success
 predicate, 50-step horizon, `pd_ee_delta_pos`, and the same perturbation kwargs) on the robot and
 camera the real setup has -- a Franka Research 3 with a ZED mini on the hand. Use them with
 `camera_view="wrist"`:
 
 ```python
-env = make_env("PickCube-v1.2", camera_view="wrist")   # 224 x 224 hand_camera, robot "fr3_zed"
+env = make_env("PickCube-FR3", camera_view="wrist")   # 224 x 224 hand_camera, robot "fr3_zed"
 ```
 
 **Robot.** ManiSkill has no FR3, so `fr3.py` builds one from Franka's `franka_description`
@@ -229,7 +272,7 @@ NOTICE; `build_fr3_assets.py` regenerates them from a checkout). It shares the P
 Franka Hand, 0.1034 m TCP and rest pose, so the controllers and grasp logic are the Panda's;
 the FR3's own joint limits and `fr3_*` names apply. `robot_uids` is `fr3` (arm and hand alone, what
 every other camera view gets) or `fr3_zed` (the same with the camera, which `make_env` picks under
-`camera_view="wrist"` and which is recorded into a trajectory's env kwargs). A `-v1.2` task refuses
+`camera_view="wrist"` and which is recorded into a trajectory's env kwargs). A `-FR3` task refuses
 another robot. The stock tasks choose their start pose by comparing `robot_uids` to `"panda"`, so
 `FR3Mixin` has them see a panda while those hooks run; `tests/test_fr3.py` checks the reset TCP
 and joints equal the Panda's on all six tasks and that `PickCube`'s reward takes the panda branch.
@@ -252,10 +295,10 @@ other viewpoint aspects are shifts relative to whichever camera it is, so the sa
 They were set for the Panda's view and have not been re-tuned for the ZED, which sees only about
 16 x 21 cm of table at reset.
 
-## The marked peg (LiftPegUpright-v2)
+## The marked peg (LiftPegUpright-HarderPerception)
 
 `LiftPegUpright-v1.1` is solvable from colour alone (a red/blue peg, always lying along x, either
-end may go down). v2 is the same task where success depends on reading a shape, for testing what a
+end may go down). `-HarderPerception` (formerly `-v2`) is the same task where success depends on reading a shape, for testing what a
 pretrained visual encoder buys:
 
 - the peg is one colour all over, and each end carries a marking: the base end one from
@@ -285,7 +328,7 @@ reset, ~0.15 s on physx_cpu) and to 0 above it (one draw per parallel env for th
 base end's direction is still redrawn every reset). `perturbations` works as on the `-v1.1` ids.
 
 ```python
-env = make_env("LiftPegUpright-v2", camera_view="wrist", markings="evaluation", decoy=True)
+env = make_env("LiftPegUpright-HarderPerception", camera_view="wrist", markings="evaluation", decoy=True)
 ```
 
 ## Tests
@@ -298,8 +341,10 @@ python tests/test_tasks.py      # the -v1.1 ids: registration, and what they do/
 python tests/test_perturbation_classes.py   # the class/aspect registry, resolver and splits; no simulator
 python tests/test_perturbation_mixin.py     # `perturbations` on real envs: each class shows, redraws, reproduces
 python tests/test_make_env.py   # real PushCube-v1 envs: resets, views, frame_skip equivalence
-python tests/test_fr3.py        # the -v1.2 ids: the FR3, the ZED's pose and intrinsics, rig-aware fov
-python tests/test_marked_peg.py # LiftPegUpright-v2: marking splits, v1.1 dynamics, signed success
+python tests/test_fr3.py        # the -FR3 ids: the FR3, the ZED's pose and intrinsics, rig-aware fov
+python tests/test_marked_peg.py # LiftPegUpright-HarderPerception: marking splits, v1.1 dynamics, signed success
+python -m pytest tests/test_peg_insertion.py tests/test_distractor_tasks.py tests/test_pick_cube_distractors.py tests/test_plug_charger.py
+python -m pytest tests/test_renames_yaw_control_backdrop.py  # aliases, pd_ee_delta_pos_yaw (incl. a scripted solve), background_video
 ```
 
 `test_wrappers.py` covers what the simulator cannot show: staggered episode ends across a batch

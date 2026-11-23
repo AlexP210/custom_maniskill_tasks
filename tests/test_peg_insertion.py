@@ -1,4 +1,4 @@
-"""PegInsertionSide-v1.1 / -v2: `python -m pytest tests/test_peg_insertion.py`.
+"""PegInsertionSide-v1.1 / -MultiArmDistractors: `python -m pytest tests/test_peg_insertion.py`.
 
 physx_cpu at num_envs=1 throughout, since sapien can only enable GPU PhysX once per process.
 """
@@ -17,23 +17,44 @@ def _zero(env):
 
 
 def test_registered_with_stock_horizon_and_control_mode():
-    for task in ("PegInsertionSide-v1.1", "PegInsertionSide-v2"):
+    for task in ("PegInsertionSide-v1.1", "PegInsertionSide-MultiArmDistractors", "PegInsertionSide-v2"):
         spec = REGISTERED_ENVS[task]
         assert spec.max_episode_steps == REGISTERED_ENVS["PegInsertionSide-v1"].max_episode_steps == 100
-        assert spec.default_kwargs["control_mode"] == "pd_ee_delta_pos"
+        assert spec.default_kwargs["control_mode"] == "pd_ee_delta_pos_yaw"
+    assert "PegInsertionSide-v3" not in REGISTERED_ENVS
 
 
 def test_scene_camera_only_and_plain_panda():
-    env = make_env("PegInsertionSide-v2")
+    env = make_env("PegInsertionSide-MultiArmDistractors")
     obs, _ = env.reset(seed=0)
     assert list(obs["sensor_data"]) == ["base_camera"], "no wrist camera"
     assert env.unwrapped.agent.uid == "panda"
-    assert env.action_space.shape == (4,), "distractors are not part of the action space"
+    assert env.action_space.shape == (5,), "xyz, yaw, gripper: distractors are not part of the action space"
     env.close()
 
 
+def test_v1_1_keeps_the_stock_camera_and_the_distractor_ids_the_scene_camera():
+    from custom_maniskill_tasks.distractor_scene import SCENE_CAMERA_EYE
+
+    for task, eye in (("PegInsertionSide-v1.1", [0.0, -0.3, 0.2]), ("PegInsertionSide-MultiArmDistractors", SCENE_CAMERA_EYE)):
+        env = make_env(task)
+        env.reset(seed=0)
+        u = env.unwrapped
+        assert u.agent.uid == "panda"
+        pose = u._sensors["base_camera"].camera.get_global_pose()
+        assert np.allclose(pose.p, eye, atol=1e-5), (task, pose.p)
+        env.close()
+    # make_env's default takes the registered control mode; an explicit one still wins
+    for control_mode, dims in (("task", 5), (None, 5), ("pd_ee_delta_pose", 7)):
+        env = make_env("PegInsertionSide-v1.1", control_mode=control_mode)
+        obs, _ = env.reset(seed=0)
+        assert list(obs["sensor_data"]) == ["base_camera"], "no wrist camera"
+        assert env.action_space.shape == (dims,), control_mode
+        env.close()
+
+
 def test_success_does_not_terminate():
-    env = make_env("PegInsertionSide-v2", ignore_terminations=False)
+    env = make_env("PegInsertionSide-MultiArmDistractors", ignore_terminations=False)
     env.reset(seed=0)
     u = env.unwrapped
     u.peg.set_pose(u.goal_pose)  # head at the hole's centre: inserted
@@ -54,14 +75,14 @@ def test_task_draws_match_v1_1_per_seed():
         env.close()
         return out
 
-    for a, b in zip(first_state("PegInsertionSide-v1.1"), first_state("PegInsertionSide-v2")):
+    for a, b in zip(first_state("PegInsertionSide-v1.1"), first_state("PegInsertionSide-MultiArmDistractors")):
         torch.testing.assert_close(a, b)
 
 
 def test_distractors_carry_their_cubes_along_the_tour():
     """By the end of its first cycle each distractor has carried its cube to the next pad in its tour."""
     for seed in (1, 4):
-        env = make_env("PegInsertionSide-v2")
+        env = make_env("PegInsertionSide-MultiArmDistractors")
         env.reset(seed=seed)
         u = env.unwrapped
         ends = {n: int(u._distractor_delay[k, 0]) + CYCLE_STEPS for k, n in enumerate(u.distractor_names)}
@@ -82,7 +103,7 @@ def test_distractors_carry_their_cubes_along_the_tour():
 
 
 def test_distractor_selection_and_state_dict():
-    env = make_env("PegInsertionSide-v2", distractor_robots=["left"])
+    env = make_env("PegInsertionSide-MultiArmDistractors", distractor_robots=["left"])
     env.reset(seed=0)
     u = env.unwrapped
     state = u.get_state_dict()
@@ -101,7 +122,7 @@ def test_distractor_selection_and_state_dict():
 
 def test_object_hue_leaves_distractors_alone():
     def colours(perturbations):
-        env = make_env("PegInsertionSide-v2", perturbations=perturbations)
+        env = make_env("PegInsertionSide-MultiArmDistractors", perturbations=perturbations)
         env.reset(seed=0)
         u = env.unwrapped
 
@@ -122,7 +143,7 @@ def test_object_hue_leaves_distractors_alone():
 def test_scene_camera_frames_all_three_robots():
     """Every link of the agent and both distractors stays inside the scene camera's frame (5%
     margin) through an episode, so the distractors are actually in the observation."""
-    env = make_env("PegInsertionSide-v2")
+    env = make_env("PegInsertionSide-MultiArmDistractors")
     env.reset(seed=2)
     u = env.unwrapped
     params = u._sensors["base_camera"].get_params()

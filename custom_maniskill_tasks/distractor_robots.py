@@ -157,6 +157,15 @@ class DistractorRobotsMixin:
     """Adds the scripted distractor robots named by the `distractor_robots` kwarg (see module doc)."""
 
     DEFAULT_DISTRACTORS: tuple[str, ...] = ("left", "right")
+    distractor_max_start_delay: int = MAX_START_DELAY
+    """Per-task override of `MAX_START_DELAY` (see `distractor_scene` for when to shorten it)."""
+    distractor_cube_colour: tuple[float, float, float, float] | None = None
+    """Per-task override of every station's cube: RGBA in [0, 1], drawn with a plain material (only a
+    base colour, as ManiSkill's `actors.build_cube` draws a task's own cube), so the distractors'
+    cubes can be made indistinguishable from the task's. None keeps each station's `cube_colour`."""
+    distractor_pads: bool = True
+    """Per-task switch for the pads marking where each distractor puts its cube down. Purely visual
+    (the script targets the pad positions either way)."""
 
     def __init__(self, *args, distractor_robots=None, **kwargs):
         self.distractor_names = canonical_distractors(
@@ -191,15 +200,16 @@ class DistractorRobotsMixin:
             station = STATIONS[name]
             builder = self.scene.create_actor_builder()
             builder.add_box_collision(half_size=[CUBE_HALF_SIZE] * 3)
-            builder.add_box_visual(
-                half_size=[CUBE_HALF_SIZE] * 3,
-                material=sapien.render.RenderMaterial(
+            if self.distractor_cube_colour is None:
+                material = sapien.render.RenderMaterial(
                     base_color=sapien_utils.hex2rgba(station.cube_colour), roughness=0.5, specular=0.5
-                ),
-            )
+                )
+            else:
+                material = sapien.render.RenderMaterial(base_color=list(self.distractor_cube_colour))
+            builder.add_box_visual(half_size=[CUBE_HALF_SIZE] * 3, material=material)
             builder.initial_pose = sapien.Pose([*station.pads[0], CUBE_HALF_SIZE])
             self.distractor_cubes[name] = builder.build(f"{DISTRACTOR_PREFIX}{name}_cube")
-            for i, pad in enumerate(station.pads):
+            for i, pad in enumerate(station.pads if self.distractor_pads else ()):
                 builder = self.scene.create_actor_builder()
                 builder.add_box_visual(
                     half_size=[PAD_HALF_SIZE, PAD_HALF_SIZE, PAD_THICKNESS],
@@ -226,7 +236,7 @@ class DistractorRobotsMixin:
         seeds = np.asarray(self._episode_seed)[env_idx.cpu().numpy()]
         rngs = [np.random.RandomState((int(seed) ^ 0xD15C0B07) % 2**32) for seed in seeds]
         # (stations, b, 5): start position in the tour, delay, cube xy jitter, cube yaw
-        draws = np.array([[(r.randint(len(STATIONS[name].tour)), r.randint(MAX_START_DELAY + 1),
+        draws = np.array([[(r.randint(len(STATIONS[name].tour)), r.randint(self.distractor_max_start_delay + 1),
                             *r.uniform(-0.01, 0.01, 2), r.uniform(-0.3, 0.3))
                            for r in rngs] for name in self.distractor_names], dtype=np.float64)
         draws = torch.as_tensor(draws, dtype=torch.float32, device=self.device)
