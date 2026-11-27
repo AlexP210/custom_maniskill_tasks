@@ -176,9 +176,9 @@ def test_extrinsics_are_the_real_mounts():
 def test_intrinsics_are_the_real_cameras_at_224():
     assert np.isclose(np.degrees(fr3.ZED_HFOV), 82.504, atol=1e-3), "the SDK calibration's HFOV"
     assert np.isclose(np.degrees(FR3_ZED_RIG.fov), 52.517, atol=1e-3)
-    env = make_env("PushCube-FR3", camera_view="wrist")
+    env = make_env("PushCube-FR3", cameras=[{"name": "wrist", "preset": "wrist"}])
     obs, _ = env.reset(seed=0)
-    assert set(obs["sensor_data"]) == {"hand_camera"}, "only the wrist camera under wrist_only"
+    assert set(obs["sensor_data"]) == {"hand_camera"}, "only the listed camera"
     assert obs["sensor_data"]["hand_camera"]["rgb"].shape == (1, 224, 224, 3)
     camera = env.unwrapped._sensors["hand_camera"]
     K = camera.camera.get_intrinsic_matrix()[0].cpu().numpy()
@@ -194,7 +194,7 @@ def test_intrinsics_are_the_real_cameras_at_224():
 
 
 def test_the_nominal_pose_is_where_the_camera_is_at_reset():
-    env = make_env("PushCube-FR3", camera_view="wrist", robot_init_qpos_noise=0.0)
+    env = make_env("PushCube-FR3", cameras=[{"name": "wrist", "preset": "wrist"}], robot_init_qpos_noise=0.0)
     env.reset(seed=5)
     pose = env.unwrapped._sensors["hand_camera"].camera.global_pose
     position, rotation = wrist_camera_world_pose(ViewpointConfig(rig=FR3_ZED_RIG))
@@ -204,14 +204,16 @@ def test_the_nominal_pose_is_where_the_camera_is_at_reset():
     env.close()
 
 
-def test_the_wrist_robot_is_chosen_by_the_view():
-    default = make_env("PushCube-FR3", obs_mode="rgb", camera_view="default")
-    assert default.unwrapped.robot_uids == "fr3"
-    assert "hand_camera" not in default.unwrapped._sensors, "only the wrist view pays for the camera"
-    default.close()
-    wrist = make_env("PushCube-FR3", obs_mode="rgb", camera_view="wrist")
-    assert wrist.unwrapped.robot_uids == "fr3_zed"
-    assert wrist.unwrapped.spec.kwargs["robot_uids"] == "fr3_zed", "recorded, so a replay builds the same robot"
+def test_the_zed_is_a_listed_camera_on_the_plain_fr3():
+    """The ZED is mounted by `cameras` (the `wrist` preset, `FR3_ZED_RIG`) on the plain `fr3`, so the
+    robot does not change with the camera, and the camera list is recorded for a replay."""
+    scene = make_env("PushCube-FR3", obs_mode="rgb", cameras=[{"name": "scene", "preset": "task"}])
+    assert scene.unwrapped.robot_uids == "fr3"
+    assert "hand_camera" not in scene.unwrapped._sensors, "only a listed camera is rendered"
+    scene.close()
+    wrist = make_env("PushCube-FR3", obs_mode="rgb", cameras=[{"name": "wrist", "preset": "wrist"}])
+    assert wrist.unwrapped.robot_uids == "fr3"
+    assert wrist.unwrapped.spec.kwargs["cameras"] == [{"name": "wrist", "preset": "wrist", "resolution": 224}]
     wrist.close()
 
 
@@ -220,7 +222,7 @@ def test_the_wrist_robot_is_chosen_by_the_view():
 # --------------------------------------------------------------------------- #
 def test_viewpoint_shifts_the_zed_and_not_the_panda():
     config = {"viewpoint": {"forward": -2, "pitch": 5, "fov": 50}}
-    env = make_env("PushCube-FR3", camera_view="wrist", perturbations=config)
+    env = make_env("PushCube-FR3", cameras=[{"name": "wrist", "preset": "wrist"}], perturbations=config)
     env.reset(seed=0)  # make_env already checked the built pose and fov against the draw
     drawn = env.unwrapped.episode_perturbations["viewpoint"]
     assert drawn["fov"] == 50 and drawn["forward"] == -2
@@ -229,7 +231,7 @@ def test_viewpoint_shifts_the_zed_and_not_the_panda():
     env.close()
     # the fov range follows the rig: 108 is the Panda's own, and outside the ZED's
     try:
-        make_env("PushCube-FR3", camera_view="wrist", perturbations={"viewpoint": {"fov": 108}})
+        make_env("PushCube-FR3", cameras=[{"name": "wrist", "preset": "wrist"}], perturbations={"viewpoint": {"fov": 108}})
     except ValueError as error:
         assert "outside its range" in str(error)
     else:
@@ -240,7 +242,7 @@ def test_viewpoint_shifts_the_zed_and_not_the_panda():
 
 
 def test_the_neutral_fov_is_the_zeds_own():
-    env = make_env("PushCube-FR3", camera_view="wrist", perturbations={"viewpoint": {"fov": 52.517, "pitch": 3}})
+    env = make_env("PushCube-FR3", cameras=[{"name": "wrist", "preset": "wrist"}], perturbations={"viewpoint": {"fov": 52.517, "pitch": 3}})
     env.reset(seed=0)
     assert np.isclose(np.degrees(env.unwrapped._sensors["hand_camera"].config.fov), 52.517, atol=1e-3)
     env.close()
@@ -255,7 +257,7 @@ TESTS = [
     test_extrinsics_are_the_real_mounts,
     test_intrinsics_are_the_real_cameras_at_224,
     test_the_nominal_pose_is_where_the_camera_is_at_reset,
-    test_the_wrist_robot_is_chosen_by_the_view,
+    test_the_zed_is_a_listed_camera_on_the_plain_fr3,
     test_viewpoint_shifts_the_zed_and_not_the_panda,
     test_the_neutral_fov_is_the_zeds_own,
 ]

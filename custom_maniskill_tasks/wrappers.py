@@ -584,10 +584,8 @@ class DINORewardWrapper(_AttributeForwarding, gym.Wrapper):
     def _resolve_camera_uid(self, env) -> str:
         """The scene's one rgb camera, or a refusal to guess.
 
-        Same reasoning as `CustomManiSkillWrapper._resolve_camera_uid` in the TD-MPC2 adapter:
-        normally there is exactly one (the camera views add none and `wrist_only` drops the task's
-        own), and where there are several, picking one silently would compute the reward against a
-        view the policy never sees.
+        Normally there is exactly one (a one-camera `cameras` list), and where there are several,
+        picking one silently would compute the reward against a view the policy never sees.
         """
         sensors = self._sensor_space(env)
         uids = [uid for uid, space in sensors.spaces.items() if "rgb" in space.spaces]

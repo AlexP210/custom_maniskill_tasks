@@ -35,7 +35,7 @@ def parse_spec(spec: str) -> dict:
 
 
 def render(task: str, kwargs: dict, seed: int):
-    env = make_env(task, obs_mode="rgb", camera_view="wrist", sim_backend="physx_cpu", **kwargs)
+    env = make_env(task, obs_mode="rgb", cameras=[{"name": "wrist", "preset": "wrist"}], sim_backend="physx_cpu", **kwargs)
     obs, _ = env.reset(seed=seed)
     hand = np.asarray(obs["sensor_data"]["hand_camera"]["rgb"].cpu())[0]
     view = np.asarray(env.render().cpu())[0]

@@ -18,7 +18,7 @@ POKE = "PokeCube-v1.1"
 
 
 def _build(task=TASK, perturbations=None, **kwargs):
-    return make_env(task, camera_view="wrist", sim_backend="physx_cpu", perturbations=perturbations, **kwargs)
+    return make_env(task, cameras=[{"name": "wrist", "preset": "wrist"}], sim_backend="physx_cpu", perturbations=perturbations, **kwargs)
 
 
 def _frame(obs):
@@ -167,7 +167,7 @@ def test_the_wrist_camera_is_posed_each_episode_by_the_drawn_viewpoint():
 def test_bad_configs_are_refused_before_anything_is_built():
     assert "outside its range" in _error(_build, perturbations={"lighting": {"temperature": 1.7}})
     assert "Unknown perturbation class" in _error(_build, perturbations={"corruption": "default"})
-    assert "wrist" in _error(make_env, TASK, sim_backend="physx_cpu", camera_view="default",
+    assert "wrist" in _error(make_env, TASK, sim_backend="physx_cpu", cameras=[{"name": "scene", "preset": "task"}],
                              perturbations={"viewpoint": {"pitch": 5}})
     assert "reconfiguration_freq" in _error(_build, perturbations={"lighting": "randomize-train"}, reconfiguration_freq=0)
     assert "object of interest" in _error(_build, POKE, perturbations={"object_colour": "randomize-train"})

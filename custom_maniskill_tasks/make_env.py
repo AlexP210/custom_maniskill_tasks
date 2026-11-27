@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Callable, Mapping, Sequence
 
 import gymnasium as gym
@@ -10,14 +11,7 @@ import numpy as np
 import mani_skill.envs  # noqa: F401  (registers the task ids with gymnasium)
 
 from custom_maniskill_tasks.backends import backend_kwargs
-from custom_maniskill_tasks.cameras import (
-    DEFAULT_CAMERA_RESOLUTION,
-    FOCUSED_CAMERA_UID,
-    build_sensor_configs,
-    camera_view_applied,
-    canonical_camera_view,
-    check_camera_view,
-)
+from custom_maniskill_tasks.cameras import CamerasMixin, cameras_config, check_cameras, resolve_cameras
 from custom_maniskill_tasks.lighting import check_lighting
 from custom_maniskill_tasks.perturbation_classes import resolve_perturbations
 from custom_maniskill_tasks.perturbation_mixin import check_perturbations, supports_perturbations
@@ -34,7 +28,7 @@ TASKS_IN_USE = (
     "PickCube-v1.1",
     "PickSingleYCB-v1.1",
     # the same on the Franka Research 3 with the real robot's ZED mini wrist camera (see `fr3`),
-    # for sim-to-real; these ones want camera_view="wrist"
+    # for sim-to-real; these ones want a `wrist` camera
     "PushCube-FR3",
     "PlaceSphere-FR3",
     "LiftPegUpright-FR3",
@@ -53,6 +47,7 @@ TASKS_IN_USE = (
     "PegInsertionSide-MultiArmDistractors",
     "LiftPegUpright-MultiArmDistractors",
     "PickCube-MultiArmDistractors",
+    "PickCube-MultiArmDistractors-ShuffledPositions",
     # stock ManiSkill tasks that older datasets and configs still name
     "PushCube-v1",
     "PickCube-v1",
@@ -72,11 +67,8 @@ def make_env(
     obs_mode: str = "rgb",
     control_mode: str | None = "task",
     num_envs: int = 1,
-    camera_view: str = "default",
+    cameras: Sequence[Mapping[str, Any]] | None = None,
     perturbations: Mapping[str, Any] | None = None,
-    camera_resolution: int | None = DEFAULT_CAMERA_RESOLUTION,
-    wrist_only: bool = True,
-    focused_camera_uid: str = FOCUSED_CAMERA_UID,
     frame_skip: int = 1,
     n_frames: int | None = None,
     frame_axis: int = 1,
@@ -88,7 +80,7 @@ def make_env(
     obs_wrappers: Sequence[Callable[[gym.Env], gym.Env]] = (),
     **env_kwargs,
 ) -> gym.Env:
-    """Build `task_name` with the camera view, action chunking and frame stacking asked for.
+    """Build `task_name` with the cameras, action chunking and frame stacking asked for.
 
     The env never resets itself: `gym.make` applies no auto-reset (only `make_vec` /
     `ManiSkillVectorEnv` do), `ignore_terminations` stops a momentary success from ending the
@@ -115,7 +107,7 @@ def make_env(
             carry one) rather than defer to it.
         perturbations: how the scene differs from the stock one, as {class: spec} -- see
             `perturbation_classes`. The classes are `lighting`, `object_colour`, `table_colour`,
-            `table_texture`, `table_material` and `viewpoint` (which needs `camera_view="wrist"`),
+            `table_texture`, `table_material` and `viewpoint` (which needs a `wrist` camera),
             each a group of aspects. A class is "default" (every aspect neutral), "randomize-train"
             / "randomize-evaluation" / "randomize-full" (every aspect drawn afresh each episode
             from that part of its range), or a dict of aspects, each of which is "default", a
@@ -124,15 +116,11 @@ def make_env(
             every reset (`reconfiguration_freq=1`). `env.unwrapped.episode_perturbations` says
             what the current episode drew. Recorded as the env kwarg, in canonical form, only
             when something is not default.
-        camera_view: which camera the observations come from -- "default" (the task's own camera,
-            also accepted as "standard"), "focused" (that camera re-posed onto the tabletop
-            workspace through a narrow fov) or "wrist" (a hand-mounted fisheye).
-        camera_resolution: square resolution for every camera; None keeps each task's own. Note
-            `ManiSkillTask.make_env` used to leave the default view at ManiSkill's 128, so
-            reproducing an old "standard" env means passing `camera_resolution=None`.
-        wrist_only: under `camera_view="wrist"`, drop the task's own camera instead of rendering
-            and recording both.
-        focused_camera_uid: which camera `camera_view="focused"` re-poses.
+        cameras: the observation cameras, a list of `{name, preset, resolution, fov}` specs (see
+            `cameras`), e.g. `[{"name": "wrist", "preset": "wrist"}]`; the env renders exactly
+            these, each under its preset's sensor uid. None leaves the task's own cameras exactly
+            as registered (ManiSkill's 128 px). Recorded in `env.spec.kwargs`. On a stock `-v1`
+            id, which has no `cameras` kwarg, the env is built from a subclass that adds it.
         frame_skip: act in chunks of this many primitive actions -- see `FrameSkip`. The task's
             time limit is unchanged and still counted in primitive steps, so an episode lasts
             `max_episode_steps / frame_skip` macro steps.
@@ -144,7 +132,7 @@ def make_env(
         sim_backend, render_backend: resolved and pinned to the same cuda device by
             `backend_kwargs`; None means ManiSkill's own choice (physx_cpu at `num_envs=1`).
         render_mode: for `env.render()`, which uses the separate human render camera and is
-            unaffected by `camera_view`.
+            unaffected by `cameras`.
         reward_wrappers: callables applied in order between `FrameSkip` and `obs_wrappers`, for
             wrappers that rewrite the reward (`DINORewardWrapper`). Underneath the observation
             adapters, so they still see ManiSkill's own observation dict; outside `FrameSkip`, so
@@ -153,19 +141,23 @@ def make_env(
             project-specific observation adapters (TSD's TensorDict view of the observation dict,
             DINO-WM's flat state/proprio one).
         **env_kwargs: anything else `gym.make` takes -- `reward_mode`, `reconfiguration_freq`,
-            `max_episode_steps`, `shader_dir`, a `sensor_configs` dict merged over the one this
-            builds, ...
+            `max_episode_steps`, `shader_dir`, a `sensor_configs` dict (ManiSkill's own per-uid
+            overrides, applied over the cameras), ...
     """
-    view = canonical_camera_view(camera_view)
+    specs = resolve_cameras(cameras)
     rig = rig_for_task(task_name)
     perturbation_config = resolve_perturbations(perturbations, fov_degrees=float(np.degrees(rig.fov)))
-    if "viewpoint" in perturbation_config.active and view != "wrist":
+    if "viewpoint" in perturbation_config.active and not any(s.preset == "wrist" for s in specs or ()):
         raise ValueError(
-            f"perturbations has 'viewpoint', which moves the wrist camera, but camera_view={camera_view!r}."
+            f"perturbations has 'viewpoint', which moves the wrist camera, but cameras={cameras_config(specs)} has none."
         )
-
-    sensor_configs = build_sensor_configs(view, camera_resolution, focused_camera_uid, rig)
-    sensor_configs.update(env_kwargs.pop("sensor_configs", {}) or {})
+    if "viewpoint" in perturbation_config.active and any(s.remounted for s in specs):
+        raise ValueError(
+            "perturbations' 'viewpoint' poses the wrist camera from its rig's mount and would undo the "
+            "camera's `pitch`/`offset`; use one or the other."
+        )
+    if specs is not None:
+        env_kwargs["cameras"] = cameras_config(specs)
 
     if control_mode == "task":
         from mani_skill.utils.registration import REGISTERED_ENVS
@@ -173,10 +165,6 @@ def make_env(
         control_mode = REGISTERED_ENVS[task_name].default_kwargs.get("control_mode", "pd_ee_delta_pos")
     if control_mode is not None:
         env_kwargs["control_mode"] = control_mode
-    if view == "wrist" and rig.wrist_robot_uid is not None:
-        # a robot that has its wrist camera built in (the FR3's ZED); the one without it is the
-        # task's default, so the other views do not pay to render a camera nothing reads
-        env_kwargs.setdefault("robot_uids", rig.wrist_robot_uid)
 
     if not perturbation_config.is_default:
         if not supports_perturbations(task_name):
@@ -189,17 +177,16 @@ def make_env(
         # trajectory json) as json
         env_kwargs["perturbations"] = perturbation_config.to_config()
 
-    with camera_view_applied(view, task_name, wrist_only=wrist_only, rig=rig):
+    with with_cameras_kwarg(task_name, needed=specs is not None):
         env = gym.make(
             id=task_name,
             obs_mode=obs_mode,
             num_envs=num_envs,
-            sensor_configs=sensor_configs,
             render_mode=render_mode,
             **backend_kwargs(sim_backend, render_backend, num_envs),
             **env_kwargs,
         )
-    check_camera_view(env, view, focused_camera_uid)
+    check_cameras(env, specs)
     # checked against what the env drew for its first episode
     if hasattr(env.unwrapped, "lighting"):  # the stock `-v1` ids have none
         check_lighting(env, env.unwrapped.lighting)
@@ -216,3 +203,26 @@ def make_env(
     if n_frames is not None:
         env = FrameStack(env, n_frames, frame_axis=frame_axis)
     return env
+
+
+@contextlib.contextmanager
+def with_cameras_kwarg(task_name: str, needed: bool):
+    """Build a task whose class lacks `CamerasMixin` (a stock `-v1` id) from a subclass that has it.
+
+    The registry's class is swapped only for the duration of the `gym.make` call: the instance
+    stays on the subclass (so a later reconfiguration still builds the listed cameras), while other
+    envs of the same id in this process are untouched.
+    """
+    from mani_skill.utils.registration import REGISTERED_ENVS
+
+    spec = REGISTERED_ENVS.get(task_name)
+    if not needed or spec is None or issubclass(spec.cls, CamerasMixin):
+        # an unknown id: let gym.make raise its own error
+        yield
+        return
+    original_cls = spec.cls
+    spec.cls = type(original_cls.__name__ + "WithCameras", (CamerasMixin, original_cls), {})
+    try:
+        yield
+    finally:
+        spec.cls = original_cls

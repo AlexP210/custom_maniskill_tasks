@@ -118,7 +118,11 @@ def test_every_id_works_through_make_env():
             print(f"      (skipped {task}: run `python -m mani_skill.utils.download_asset "
                   f"{' '.join(missing)}` to include it)")
             continue
-        env = make_env(task, obs_mode="rgb", camera_view="focused", camera_resolution=64,
+        cameras = [{"name": "scene", "preset": "focused", "resolution": 64}]
+        if task == "PickSingleYCB-v1.1":
+            # the stock task builds panda_wristcam, whose hand_camera cannot be removed, so it is listed
+            cameras.append({"name": "wrist", "preset": "wrist", "resolution": 64})
+        env = make_env(task, obs_mode="rgb", cameras=cameras,
                        frame_skip=2, n_frames=2)
         obs, _ = env.reset(seed=0)
         rgb = obs["sensor_data"]["base_camera"]["rgb"]

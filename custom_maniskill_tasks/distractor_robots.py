@@ -64,6 +64,9 @@ MAX_START_DELAY = 20
 """Each episode a distractor idles for 0..MAX_START_DELAY env steps before its first cycle, drawn
 per station and env, so two stations (and two episodes) are not in lockstep."""
 
+NEVER_STARTS = 2**40
+"""The start delay `distractors_still` gives every distractor: past any episode's end."""
+
 
 @dataclass(frozen=True)
 class Station:
@@ -163,14 +166,37 @@ class DistractorRobotsMixin:
     """Per-task override of every station's cube: RGBA in [0, 1], drawn with a plain material (only a
     base colour, as ManiSkill's `actors.build_cube` draws a task's own cube), so the distractors'
     cubes can be made indistinguishable from the task's. None keeps each station's `cube_colour`."""
+    distractor_cube_colours: dict[str, tuple[float, float, float, float]] | None = None
+    """Per-task, per-station override, taking precedence over `distractor_cube_colour`: station name ->
+    RGBA, drawn with the same plain material. Stations it leaves out fall back as above."""
     distractor_pads: bool = True
     """Per-task switch for the pads marking where each distractor puts its cube down. Purely visual
     (the script targets the pad positions either way)."""
+    distractor_control_mode: str = "pd_ee_delta_pos"
+    """The distractor robots' controller; `distractor_actions` must emit its action."""
 
-    def __init__(self, *args, distractor_robots=None, **kwargs):
+    def __init__(self, *args, distractor_robots=None, distractor_tour_start=None, distractors_still=False, **kwargs):
+        if not isinstance(distractors_still, (bool, np.bool_)):
+            raise ValueError(f"distractors_still={distractors_still!r}: expected a bool")
+        self.distractors_still = bool(distractors_still)
+        """True: the distractors stay in the scene but never start their script, holding their rest
+        pose (gripper open) with their objects where the episode put them, for the whole episode.
+        Every per-episode draw (object poses, task alignment, delays) is made as usual, so a seed
+        gives the same scene as with moving distractors; only the motion is gone."""
         self.distractor_names = canonical_distractors(
             self.DEFAULT_DISTRACTORS if distractor_robots is None else distractor_robots
         )
+        if distractor_tour_start is not None:
+            tours = {len(STATIONS[name].tour) for name in self.distractor_names} or {4}
+            if isinstance(distractor_tour_start, bool) or not isinstance(distractor_tour_start, (int, np.integer)) \
+                    or not 0 <= int(distractor_tour_start) < min(tours):
+                raise ValueError(f"distractor_tour_start={distractor_tour_start!r}: expected an index into the tour, 0..{min(tours) - 1}")
+            distractor_tour_start = int(distractor_tour_start)
+        self.distractor_tour_start = distractor_tour_start
+        """None: each episode draws where in its tour every distractor's cube starts. An index pins it
+        for every station and episode, after the same draws (so the delays, cube jitter and yaw, and
+        the task's own draws, are what the seed gives anyway): a controlled change of what the
+        distractors do, with everything else held fixed (the PickCube distractor probe's conditions)."""
         self.distractors: dict[str, Panda] = {}
         self.distractor_cubes = {}
         super().__init__(*args, **kwargs)
@@ -184,7 +210,7 @@ class DistractorRobotsMixin:
             self.distractors[name] = Panda(
                 self.scene,
                 self._control_freq,
-                "pd_ee_delta_pos",
+                self.distractor_control_mode,
                 agent_idx=f"distractor-{name}",
                 initial_pose=self._distractor_base_pose(station),
             )
@@ -195,17 +221,22 @@ class DistractorRobotsMixin:
 
     def _load_scene(self, options: dict):
         super()._load_scene(options)
+        self._load_distractor_props()
+
+    def _load_distractor_props(self):
+        """Build what the distractors work on: here each station's cube and pads."""
         self.distractor_cubes = {}
         for name in self.distractor_names:
             station = STATIONS[name]
             builder = self.scene.create_actor_builder()
             builder.add_box_collision(half_size=[CUBE_HALF_SIZE] * 3)
-            if self.distractor_cube_colour is None:
+            plain = (self.distractor_cube_colours or {}).get(name, self.distractor_cube_colour)
+            if plain is None:
                 material = sapien.render.RenderMaterial(
                     base_color=sapien_utils.hex2rgba(station.cube_colour), roughness=0.5, specular=0.5
                 )
             else:
-                material = sapien.render.RenderMaterial(base_color=list(self.distractor_cube_colour))
+                material = sapien.render.RenderMaterial(base_color=list(plain))
             builder.add_box_visual(half_size=[CUBE_HALF_SIZE] * 3, material=material)
             builder.initial_pose = sapien.Pose([*station.pads[0], CUBE_HALF_SIZE])
             self.distractor_cubes[name] = builder.build(f"{DISTRACTOR_PREFIX}{name}_cube")
@@ -227,6 +258,13 @@ class DistractorRobotsMixin:
         super()._initialize_episode(env_idx, options)
         if not self.distractor_names:
             return
+        self._initialize_distractors(env_idx)
+        if self.distractors_still:
+            # every script treats a step before its delay as "not started": zero arm action, gripper open
+            self._distractor_delay[:, env_idx] = NEVER_STARTS
+
+    def _initialize_distractors(self, env_idx):
+        """Draw this episode's script constants and put the robots and their props in place."""
         b = len(env_idx)
         if getattr(self, "_distractor_start", None) is None or self._distractor_start.shape[1] != self.num_envs:
             shape = (len(self.distractor_names), self.num_envs)
@@ -240,17 +278,14 @@ class DistractorRobotsMixin:
                             *r.uniform(-0.01, 0.01, 2), r.uniform(-0.3, 0.3))
                            for r in rngs] for name in self.distractor_names], dtype=np.float64)
         draws = torch.as_tensor(draws, dtype=torch.float32, device=self.device)
-        qpos = torch.as_tensor(REST_QPOS, dtype=torch.float32, device=self.device).expand(b, -1)
+        self._reset_distractor_robots(env_idx)
         for k, name in enumerate(self.distractor_names):
-            station, robot = STATIONS[name], self.distractors[name]
+            station = STATIONS[name]
             start = draws[k, :, 0].long()
+            if self.distractor_tour_start is not None:
+                start = torch.full_like(start, self.distractor_tour_start)
             self._distractor_start[k, env_idx] = start
             self._distractor_delay[k, env_idx] = draws[k, :, 1].long()
-            robot.robot.set_pose(Pose.create_from_pq(
-                p=torch.tensor([*station.base, 0.0], device=self.device).expand(b, 3),
-                q=torch.tensor(euler2quat(0, 0, station.yaw), dtype=torch.float32, device=self.device).expand(b, 4),
-            ))
-            robot.reset(qpos)
             tour_pads = torch.tensor([station.pads[i] for i in station.tour], dtype=torch.float32, device=self.device)
             p = torch.zeros(b, 3, device=self.device)
             p[:, :2] = tour_pads[start] + draws[k, :, 2:4]
@@ -260,6 +295,23 @@ class DistractorRobotsMixin:
             self.distractor_cubes[name].set_pose(Pose.create_from_pq(p=p, q=q))
             self.distractor_cubes[name].set_linear_velocity(torch.zeros(b, 3, device=self.device))
             self.distractor_cubes[name].set_angular_velocity(torch.zeros(b, 3, device=self.device))
+
+    def _distractor_base_xy(self, name: str, env_idx) -> torch.Tensor:
+        """(len(env_idx), 2) world xy of distractor `name`'s base this episode: its station's, fixed."""
+        return torch.tensor(STATIONS[name].base, dtype=torch.float32, device=self.device).expand(len(env_idx), 2)
+
+    def _reset_distractor_robots(self, env_idx):
+        """Every distractor back on its base (`_distractor_base_xy`), folded at `REST_QPOS`."""
+        b = len(env_idx)
+        qpos = torch.as_tensor(REST_QPOS, dtype=torch.float32, device=self.device).expand(b, -1)
+        for name in self.distractor_names:
+            station, robot = STATIONS[name], self.distractors[name]
+            base_xy = self._distractor_base_xy(name, env_idx)
+            robot.robot.set_pose(Pose.create_from_pq(
+                p=torch.cat([base_xy, torch.zeros(b, 1, device=self.device)], -1),
+                q=torch.tensor(euler2quat(0, 0, station.yaw), dtype=torch.float32, device=self.device).expand(b, 4),
+            ))
+            robot.reset(qpos)
 
     def reset(self, *args, **kwargs):
         out = super().reset(*args, **kwargs)
@@ -303,6 +355,21 @@ class DistractorRobotsMixin:
             gripper = torch.where(started, table["gripper"], torch.ones_like(table["gripper"]))
             actions[name] = torch.cat([arm, gripper[:, None]], dim=-1)
         return actions
+
+    def _distractor_objects(self) -> dict:
+        """The object each distractor works on, by station: here its cube."""
+        return self.distractor_cubes
+
+    def distractor_state(self) -> dict[str, torch.Tensor]:
+        """What the distractors are doing, per env, stations in `distractor_names` order:
+        `qpos` (num_envs, stations, 9) of each robot, and `object_p` / `object_q` (num_envs, stations,
+        3 / 4) of the object it works on, the quaternion (wxyz) with w >= 0."""
+        objects = self._distractor_objects()
+        qpos = torch.stack([self.distractors[n].robot.get_qpos() for n in self.distractor_names], 1)
+        p = torch.stack([objects[n].pose.p for n in self.distractor_names], 1)
+        q = torch.stack([objects[n].pose.q for n in self.distractor_names], 1)
+        q = torch.where(q[..., :1] < 0, -q, q)
+        return {"qpos": qpos, "object_p": p, "object_q": q}
 
     def _before_control_step(self):
         super()._before_control_step()

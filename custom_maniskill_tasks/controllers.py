@@ -14,8 +14,8 @@ means contact torques can't tilt the hand off vertical a bit at a time. Bounds a
 `pd_ee_delta_pose`'s: 0.1 m and 0.1 rad per step at an action of 1.
 
 Registered by adding it to `Panda._controller_configs` on import (`install`): additive, every stock
-mode is unchanged, and it reaches every Panda subclass (`panda_wristcam`, `cameras.PandaHandCam`,
-the distractor robots, which never use it).
+mode is unchanged, and it reaches every Panda subclass (`panda_wristcam`, `fr3`,
+and the peg-insertion distractor robots, `peg_distractor_robots`).
 """
 
 from __future__ import annotations

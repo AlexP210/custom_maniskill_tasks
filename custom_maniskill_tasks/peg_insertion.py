@@ -6,8 +6,8 @@
   `panda`, not `panda_wristcam`. The stock task only ships the wrist-camera Panda, which renders a
   `hand_camera` into every observation; this id is observed through the scene camera, so the wrist
   camera is dropped rather than rendered for nothing. The arm, the start pose (set by the task
-  itself, not the table scene) and the dynamics are the same. `camera_view="wrist"` still works
-  through `make_env` (as on PushCube-v1.1) if it is ever wanted. Stock geometry: the box turned up
+  itself, not the table scene) and the dynamics are the same. A `wrist` camera can still be listed in
+  `cameras` if it is ever wanted. Stock geometry: the box turned up
   to 22.5 deg, 3 mm clearance.
 
   Its default control mode is `pd_ee_delta_pos_yaw` (`PEG_INSERTION_CONTROL_MODE`, 5-D: position
@@ -44,6 +44,7 @@ from mani_skill.envs.tasks.tabletop.peg_insertion_side import PegInsertionSideEn
 from mani_skill.utils.registration import register_env
 
 from custom_maniskill_tasks.controllers import YAW_CONTROL_MODE
+from custom_maniskill_tasks.peg_distractor_robots import PegInsertionDistractorsMixin
 from custom_maniskill_tasks.distractor_scene import (  # noqa: F401  (camera constants re-exported)
     SCENE_CAMERA_EYE,
     SCENE_CAMERA_FOV,
@@ -51,6 +52,7 @@ from custom_maniskill_tasks.distractor_scene import (  # noqa: F401  (camera con
     SceneCameraMixin,
     distractor_task,
 )
+from custom_maniskill_tasks.cameras import CamerasMixin
 from custom_maniskill_tasks.lighting import LightingMixin
 from custom_maniskill_tasks.perturbation_mixin import PerturbationClassesMixin
 from custom_maniskill_tasks.table_material import TableMaterialMixin
@@ -70,7 +72,7 @@ PEG_INSERTION_CONTROL_MODE = YAW_CONTROL_MODE
     "PegInsertionSide-v1.1", max_episode_steps=_horizon("PegInsertionSide-v1"), control_mode=PEG_INSERTION_CONTROL_MODE
 )
 class PegInsertionSideFullHorizonEnv(
-    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PegInsertionSideEnv
+    FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PegInsertionSideEnv
 ):
     """PegInsertionSide-v1 on the plain `panda` and its stock `base_camera`, with no early
     termination and the `perturbations` kwarg."""
@@ -91,8 +93,11 @@ PegInsertionSideDistractorEnv = register_env(
         PegInsertionSideFullHorizonEnv,
         "PegInsertionSideDistractorEnv",
         "PegInsertionSide-v1.1 with scripted distractor robots beside the agent (`distractor_robots`)"
-        " and an optional video backdrop (`background_video`).",
+        " and an optional video backdrop (`background_video`). `distractor_task` picks what the"
+        " distractors do: 'pick_place' (default, cubes between pads) or 'peg_insertion' (a peg and"
+        " box each, `peg_distractor_robots`).",
         __module__=__name__,
+        distractors_mixin=PegInsertionDistractorsMixin,
     )
 )
 register_alias("PegInsertionSide-v2", "PegInsertionSide-MultiArmDistractors")

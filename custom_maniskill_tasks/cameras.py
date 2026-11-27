@@ -1,113 +1,122 @@
-"""The camera views these tasks can be observed through.
+"""The cameras a task is observed through: an explicit list, built per env by `CamerasMixin`.
 
-One `camera_view` selects the *observation* camera for the whole task family, and everything
-about that view lives here: the sensor overrides `gym.make` needs, plus the two things
-`sensor_configs` cannot express (adding a camera, removing one), which are applied around the
-`gym.make` call by `camera_view_applied`.
+A task's observation cameras are given as a list of camera specs, the `cameras` env kwarg (and
+`make_env`'s argument of the same name):
 
-Previously this logic existed three times over -- in `ManiSkillTask.make_env`, in
-`tools/replay_trajectory.py` and (as hardcoded constants) in DINO-WM's `PushCubeWrapper` -- which
-matters because a dataset recorded through one view is useless to a policy running in another. The
-numbers below are the ones every recorded dataset in this project was rendered with, so treat them
-as data, not as tunables.
+    cameras=[
+        {"name": "wrist", "preset": "wrist", "resolution": 224},
+        {"name": "scene", "preset": "task", "resolution": 128},
+    ]
+
+Each spec is one camera:
+
+- `name`: what the camera is called downstream. Agents expose its frames as `<name>_rgb`
+  (`CameraSpec.observation_key`); the env itself reports them under the sensor's uid, as ManiSkill
+  always does (`obs["sensor_data"][uid]["rgb"]`).
+- `preset`: what the camera is and where it sits (`CAMERA_PRESETS`):
+  - `task`: the task's own external camera (`base_camera`), at its registered pose and fov. For
+    the distractor tasks that is the shared front scene camera (`distractor_scene`).
+  - `focused`: the same camera re-posed onto the tabletop workspace through a narrow 36 degree
+    fov. Same uid as `task`, so the two cannot be combined.
+  - `wrist`: a camera on the robot's hand (`hand_camera`): the robot's `WristRig` decides the
+    mount, pose and fov -- the realsense pose the `-v1.1` datasets were rendered with on the
+    Panda (at the wide fisheye `WRIST_CAMERA_FOV`), the real ZED mini on the FR3.
+- `resolution`: square, in pixels (default 224, what the DINO encoders here consume).
+- `fov`: optional, degrees; replaces the preset's.
+- `pitch`: optional, degrees, `wrist` only: the camera turned about its own horizontal axis on
+  its mount, positive towards the top of its image (on the Panda, forward along the hand, where a
+  grasped peg's head points). 0 is the straight-down realsense pose every dataset was rendered with.
+- `offset`: optional, metres, `wrist` only: `[x, y, z]`, the camera moved on its mount (as on a
+  bracket) before it is tilted, in its own untilted frame: x along its view (negative lifts it off
+  the hand), y to the image's left, z to the image's top (on the Panda, forward along the hand;
+  negative moves it back, away from the fingertips). `offset: [-0.04, 0, 0]` with `pitch: 30` (4 cm
+  off the hand, tilted 30 degrees forward) frames the fingertips, a grasped peg and PegInsertionSide's
+  hole together (the two-camera PegInsertion task); moving it back instead hides the view behind the
+  hand housing.
+
+The env renders exactly the listed cameras, in that order, and nothing else: a robot that carries
+cameras of its own (`panda_wristcam`, `fr3_zed`) is refused unless the list asks for exactly that
+camera, which then takes the spec's resolution and fov.
+
+This replaces the earlier `camera_view` ("default" | "focused" | "wrist"), which could only ever
+give one camera, and whose wrist view registered a camera-carrying Panda for the whole process
+(every later env in it gained a hand camera). Here a camera is a per-env config, recorded in
+`env.spec.kwargs` like any other kwarg, so a replay of a recorded trajectory rebuilds the same
+cameras. The pose and fov numbers are the ones every recorded dataset in this project was rendered
+with, so treat them as data, not tunables.
 """
 
 from __future__ import annotations
 
-import contextlib
+import dataclasses
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import sapien
 from transforms3d.euler import euler2quat
 
-from mani_skill import logger
-from mani_skill.agents.registration import REGISTERED_AGENTS, register_agent
-from mani_skill.agents.robots.panda.panda import Panda
 from mani_skill.sensors.camera import CameraConfig
 from mani_skill.utils import sapien_utils
-from mani_skill.utils.registration import REGISTERED_ENVS
 
 DEFAULT_CAMERA_RESOLUTION = 224
-"""Square resolution every view renders at unless told otherwise. 224 because that is what the
-DINO(v2/v3) encoders consuming these frames want; ManiSkill's own task defaults are 128."""
+"""Square resolution a camera renders at unless its spec says otherwise. 224 because that is what
+the DINO(v2/v3) encoders consuming these frames want; ManiSkill's own task defaults are 128."""
 
 WRIST_CAMERA_FOV = 0.6 * np.pi
-"""Deliberately much wider than the realsense ManiSkill models, for the fisheye look.
-
-Applied through `sensor_configs`, not baked into an agent, because which Panda a task builds is
-the task's own choice: PushCube-v1 defaults to `panda`, while the wristcam-only family
-(PegInsertionSide-v1 and friends) declares `SUPPORTED_ROBOTS = ["panda_wristcam"]`. Overriding
-the camera rather than the robot leaves each task on the robot it was recorded with.
-"""
+"""The Panda wrist camera's fov: deliberately much wider than the realsense ManiSkill models, for
+the fisheye look every `-v1.1` wrist dataset was rendered with."""
 
 FOCUSED_CAMERA_EYE = [0.3, 0.0, 0.9]
 FOCUSED_CAMERA_TARGET = [-0.1, 0.0, -0.3]
 FOCUSED_CAMERA_FOV = np.pi / 5
-"""A narrow (36 degree) view from above and in front, framed on the tabletop workspace."""
+"""The `focused` preset: a narrow (36 degree) view from above and in front, on the tabletop workspace."""
 
-FOCUSED_CAMERA_UID = "base_camera"
-"""Which of the task's own cameras `camera_view="focused"` re-poses. Every tabletop task in this
-project registers exactly one external camera under this uid; `make_env` fails loudly rather than
-silently rendering the task default if a task does not."""
+TASK_CAMERA_UID = "base_camera"
+"""The uid of the task's own external camera (`task` and `focused` presets). Every tabletop task in
+this project registers exactly one external camera under it."""
 
 WRIST_CAMERA_UID = "hand_camera"
-"""ManiSkill's uid for the wrist realsense, on `panda_wristcam` and on `PandaHandCam` below."""
+"""The uid of the wrist camera (`wrist` preset), as on ManiSkill's `panda_wristcam`."""
 
-CAMERA_VIEWS = ("default", "focused", "wrist")
+CAMERA_PRESETS = {"task": TASK_CAMERA_UID, "focused": TASK_CAMERA_UID, "wrist": WRIST_CAMERA_UID}
+"""Each preset and the sensor uid it renders under."""
 
-_CAMERA_VIEW_ALIASES = {
-    # `ManiSkillTask` and `replay_trajectory.py` both called the default view "standard"
-    "standard": "default",
-}
-
-
-def canonical_camera_view(camera_view: str) -> str:
-    """Normalize a `camera_view` string, rejecting unknown ones early.
-
-    Worth doing before `gym.make` rather than after: an unrecognized view that fell through to an
-    empty `sensor_configs` would build a perfectly working env showing the wrong thing.
-    """
-    view = _CAMERA_VIEW_ALIASES.get(camera_view, camera_view)
-    if view not in CAMERA_VIEWS:
-        raise ValueError(
-            f"Unknown camera_view {camera_view!r}, expected one of "
-            f"{', '.join(repr(v) for v in CAMERA_VIEWS)}"
-        )
-    return view
+_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 WRIST_CAMERA_LOCAL_POSE = sapien.Pose(
     p=[0.035, 0, 0.036], q=euler2quat(0, -1.5707, 3.1415)
 ) * sapien.Pose(p=[0, 0.02, 0.0115])
-"""Where the wrist camera sits in the frame of `panda_hand` (x forward, y left, z up in the camera's
-own frame, as sapien has it). Both `PandaHandCam` and `panda_wristcam` mount it here."""
+"""Where the Panda's wrist camera sits in the frame of `panda_hand` (x forward, y left, z up in the
+camera's own frame, as sapien has it): where `panda_wristcam` mounts its realsense."""
 
 
 @dataclass(frozen=True, eq=False)
 class WristRig:
-    """Everything about one robot's wrist camera that the viewpoint perturbation needs.
+    """One robot's wrist camera: where it is mounted, and what the viewpoint perturbation needs.
 
     A rig is a property of the robot a task is built on, not of the task: `PANDA_RIG` is the
     realsense every `-v1.1` dataset was rendered with, `fr3.FR3_ZED_RIG` the ZED mini on the
-    real FR3. `ViewpointConfig` carries the rig it shifts, so every helper that takes a config uses the
-    right camera.
+    real FR3. The task class says which (`WRIST_RIG`).
     """
 
     name: str
     fov: float
     """Vertical field of view (rad), sapien's convention; the images are square, so it is also the horizontal one."""
     local_pose: sapien.Pose
-    """The camera's pose in the frame of the link it is mounted on, in sapien's camera frame (x forward, y left, z up)."""
+    """The camera's pose in the frame of `mount_link`, in sapien's camera frame (x forward, y left, z up)."""
     nominal_position: np.ndarray
     nominal_quaternion: np.ndarray
     """Where the camera is in the world at reset, before qpos noise (`robot_init_qpos_noise`), wxyz.
     Measured off the built env, and checked against it by `tests/test_fr3.py`."""
     finger_line: float
     """How far down the image (fraction of its height) the gripper's fingers begin to get in the way."""
-    wrist_robot_uid: str | None = None
-    """The robot uid that has this camera built in, which `make_env` selects under `camera_view="wrist"`.
-    None where the camera is instead added to the stock robot (`PandaHandCam`)."""
+    mount_link: str = "panda_hand"
+    """The robot link the camera is mounted on."""
+    near: float = 0.01
 
 
 PANDA_RIG = WristRig(
@@ -118,199 +127,238 @@ PANDA_RIG = WristRig(
     nominal_quaternion=np.array([0.70710678, 0.0, 0.70710678, 0.0]),  # looking straight down from 0.24 m
     finger_line=0.62,
 )
-"""The realsense on `panda_wristcam` / `PandaHandCam`, at the 108 degree fov the `-v1.1` datasets use."""
+"""The realsense on the Panda's hand, at the 108 degree fov the `-v1.1` datasets use."""
 
 
-class PandaHandCam(Panda):
-    """The stock Panda with the wrist realsense that ManiSkill only ships on `panda_wristcam`.
+# --------------------------------------------------------------------------- #
+# Specs
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class CameraSpec:
+    """One observation camera (module doc)."""
 
-    Only needed for tasks that default to plain `panda`, which has no wrist camera at all:
-    `sensor_configs` can retune a camera but cannot add one. Tasks already on `panda_wristcam`
-    need none of this and are left alone -- `WRIST_CAMERA_FOV` reaches their existing hand_camera
-    through `sensor_configs`.
+    name: str
+    preset: str
+    resolution: int = DEFAULT_CAMERA_RESOLUTION
+    fov: float | None = None
+    """Degrees, replacing the preset's; None keeps it."""
+    pitch: float | None = None
+    """Degrees, `wrist` only: the camera tilted on its mount, positive towards the top of its image."""
+    offset: tuple[float, float, float] | None = None
+    """Metres, `wrist` only: the camera moved on its mount before the tilt, in its untilted frame (module doc)."""
 
-    The uid stays "panda" deliberately. TableSceneBuilder picks the starting qpos off the robot
-    uid string, and its `panda_wristcam` branch rolls joint 7 by -90 degrees relative to the
-    `panda` one, which changes the task. Overriding `panda` instead keeps the original starting
-    pose and just adds the camera. Registered from `camera_view_applied`, not at import, so only
-    the wrist view pays to render it.
-    """
-
-    uid = "panda"
+    def __post_init__(self):
+        if not isinstance(self.name, str) or not _NAME.match(self.name):
+            raise ValueError(f"camera name {self.name!r} must be lowercase letters, digits and _, starting with a letter")
+        if self.preset not in CAMERA_PRESETS:
+            raise ValueError(f"camera {self.name!r}: unknown preset {self.preset!r}, expected one of {sorted(CAMERA_PRESETS)}")
+        if isinstance(self.resolution, bool) or not isinstance(self.resolution, (int, np.integer)) or self.resolution <= 0:
+            raise ValueError(f"camera {self.name!r}: resolution must be a positive integer, got {self.resolution!r}")
+        if self.fov is not None and not 0 < float(self.fov) < 180:
+            raise ValueError(f"camera {self.name!r}: fov is in degrees, in (0, 180), got {self.fov!r}")
+        if self.pitch is not None:
+            if self.preset != "wrist":
+                raise ValueError(f"camera {self.name!r}: pitch tilts a camera on its mount, so it needs the wrist preset")
+            if not -90 <= float(self.pitch) <= 90:
+                raise ValueError(f"camera {self.name!r}: pitch is in degrees, in [-90, 90], got {self.pitch!r}")
+        if self.offset is not None:
+            if self.preset != "wrist":
+                raise ValueError(f"camera {self.name!r}: offset moves a camera on its mount, so it needs the wrist preset")
+            try:
+                offset = tuple(float(v) for v in self.offset)
+            except (TypeError, ValueError):
+                offset = ()
+            if len(offset) != 3 or not all(np.isfinite(offset)) or max(map(abs, offset)) > 0.2:
+                raise ValueError(f"camera {self.name!r}: offset is [x, y, z] in metres, each within 0.2, got {self.offset!r}")
+            object.__setattr__(self, "offset", offset)  # a hydra ListConfig / list becomes a hashable tuple
 
     @property
-    def _sensor_configs(self):
-        # panda_v3 hangs the camera off panda_hand through two fixed joints; panda_v2 has the
-        # same panda_hand, so composing the two puts the camera in exactly the same place
-        pose = WRIST_CAMERA_LOCAL_POSE
-        return [
-            CameraConfig(
-                uid=WRIST_CAMERA_UID,
-                pose=pose,
-                width=DEFAULT_CAMERA_RESOLUTION,
-                height=DEFAULT_CAMERA_RESOLUTION,
-                fov=WRIST_CAMERA_FOV,
-                near=0.01,
-                far=100,
-                mount=self.robot.links_map["panda_hand"],
-            )
-        ]
+    def remounted(self) -> bool:
+        """Whether `pitch` or `offset` moves the camera off its rig's mount."""
+        return bool(self.pitch) or (self.offset is not None and any(self.offset))
+
+    @property
+    def uid(self) -> str:
+        """The sensor uid the env renders this camera under: `obs["sensor_data"][uid]`."""
+        return CAMERA_PRESETS[self.preset]
+
+    @property
+    def observation_key(self) -> str:
+        """The key agents expose this camera's frames under."""
+        return f"{self.name}_rgb"
+
+    def to_config(self) -> dict:
+        """A plain dict (json, `env.spec.kwargs`), with `fov` only when set."""
+        out = {"name": self.name, "preset": self.preset, "resolution": int(self.resolution)}
+        if self.fov is not None:
+            out["fov"] = float(self.fov)
+        if self.pitch is not None:
+            out["pitch"] = float(self.pitch)
+        if self.offset is not None:
+            out["offset"] = list(self.offset)
+        return out
+
+    def mount_pose(self, rig: "WristRig") -> sapien.Pose:
+        """The wrist camera's pose in its mount link's frame: the rig's, moved by `offset`, then tilted by `pitch`.
+
+        Both in the camera's own untilted frame. The tilt is about its y (left) axis, as
+        `viewpoint.ViewpointConfig` rotates it: a rotation of -pitch there turns the view towards
+        the top of the image.
+        """
+        pose = rig.local_pose
+        if self.offset is not None and any(self.offset):
+            pose = pose * sapien.Pose(p=list(self.offset))
+        if self.pitch:
+            half = -np.deg2rad(float(self.pitch)) / 2
+            pose = pose * sapien.Pose(q=[np.cos(half), 0.0, np.sin(half), 0.0])
+        return pose
 
 
-def build_sensor_configs(
-    camera_view: str,
-    resolution: int | None = DEFAULT_CAMERA_RESOLUTION,
-    focused_camera_uid: str = FOCUSED_CAMERA_UID,
-    rig: WristRig = PANDA_RIG,
-) -> dict:
-    """The `sensor_configs` kwarg for `gym.make` that realizes `camera_view`.
+def resolve_cameras(cameras: Sequence[Mapping[str, Any] | CameraSpec] | None) -> tuple[CameraSpec, ...] | None:
+    """Validate a `cameras` list into `CameraSpec`s. None stays None (the task's own sensors, untouched).
 
-    `resolution=None` leaves every camera at whatever the task registered it with; any integer
-    applies to all of them. ManiSkill reads a key that is not a camera uid as a global override
-    and a key that is as a per-camera one (see `update_sensor_configs_from_dict`), which is why
-    width/height sit at the top level while fov/pose are nested under a uid: re-posing globally
-    would drag every camera a task owns onto the same viewpoint.
+    Raises on an empty list, an unknown key, a repeated name, or two cameras on one sensor uid
+    (`task` and `focused`, or two `wrist`s): each would otherwise build a different env than asked.
     """
-    view = canonical_camera_view(camera_view)
-    configs: dict = {}
-    if resolution is not None:
-        configs.update(width=resolution, height=resolution)
+    if cameras is None:
+        return None
+    if isinstance(cameras, (str, Mapping)) or not isinstance(cameras, Sequence) and not hasattr(cameras, "__iter__"):
+        raise TypeError(f"cameras must be a list of camera specs, got {cameras!r}")
+    specs = []
+    for camera in cameras:
+        if isinstance(camera, CameraSpec):
+            specs.append(camera)
+            continue
+        camera = dict(camera)  # also a hydra DictConfig
+        unknown = set(camera) - {f.name for f in dataclasses.fields(CameraSpec)}
+        if unknown:
+            raise ValueError(f"camera spec {camera!r} has unknown keys {sorted(unknown)}")
+        specs.append(CameraSpec(**camera))
+    if not specs:
+        raise ValueError("cameras is empty; a task needs at least one observation camera (or None for its own)")
+    for attribute in ("name", "uid"):
+        values = [getattr(s, attribute) for s in specs]
+        repeated = sorted({v for v in values if values.count(v) > 1})
+        if repeated:
+            raise ValueError(f"cameras {[s.to_config() for s in specs]} share a {attribute}: {repeated}")
+    return tuple(specs)
 
-    if view == "default":
-        # the task's own camera, left at its registered pose and fov
+
+def cameras_config(cameras) -> list[dict] | None:
+    """The canonical, json-able form of a `cameras` list (what `env.spec.kwargs` records)."""
+    specs = resolve_cameras(cameras)
+    return None if specs is None else [s.to_config() for s in specs]
+
+
+# --------------------------------------------------------------------------- #
+# The mixin
+# --------------------------------------------------------------------------- #
+class CamerasMixin:
+    """Gives a task the `cameras` kwarg (module doc): the env renders exactly those cameras.
+
+    The task's own camera(s) come from `_task_sensor_configs`, which defaults to the stock
+    `_default_sensor_configs`; a mixin that replaces the task's camera (`SceneCameraMixin`)
+    overrides `_task_sensor_configs` instead, so the `task` preset finds it.
+    """
+
+    WRIST_RIG: WristRig = PANDA_RIG
+    """The wrist camera this task's robot carries; the FR3 tasks override it."""
+
+    def __init__(self, *args, cameras: Sequence[Mapping[str, Any]] | None = None, **kwargs):
+        self.camera_specs = resolve_cameras(cameras)
+        super().__init__(*args, **kwargs)
+
+    def _task_sensor_configs(self):
+        return super()._default_sensor_configs
+
+    @property
+    def _default_sensor_configs(self):
+        own = self._task_sensor_configs()
+        if self.camera_specs is None:
+            return own
+        own = {c.uid: c for c in (own if isinstance(own, (list, tuple)) else [own])}
+        agent_cameras = self._agent_camera_uids()
+        configs = []
+        for spec in self.camera_specs:
+            if spec.uid in agent_cameras:
+                continue  # the robot brings it; sized in _setup_sensors
+            configs.append(self._camera_config(spec, own))
         return configs
-    if view == "wrist":
-        # The camera itself comes from the robot (see camera_view_applied) and is mounted at a
-        # fixed pose relative to panda_hand, so the pose needs no override. The fov does: tasks
-        # that default to `panda_wristcam` bring their own hand_camera at the stock pi/2 and
-        # never consult the `panda` uid that PandaHandCam overrides.
-        configs[WRIST_CAMERA_UID] = dict(fov=rig.fov)
-        return configs
-    if view == "focused":
-        camera_pose = sapien_utils.look_at(
-            eye=FOCUSED_CAMERA_EYE, target=FOCUSED_CAMERA_TARGET
+
+    def _agent_camera_uids(self) -> set[str]:
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return set()
+        return {c.uid for c in (agent._sensor_configs or [])}
+
+    def _camera_config(self, spec: CameraSpec, own: dict) -> CameraConfig:
+        res = int(spec.resolution)
+        fov = None if spec.fov is None else float(np.deg2rad(spec.fov))
+        if spec.preset == "task":
+            if TASK_CAMERA_UID not in own:
+                raise ValueError(
+                    f"camera {spec.name!r} (preset 'task') wants the task's own {TASK_CAMERA_UID!r}, but "
+                    f"{type(self).__name__} registers {sorted(own)}."
+                )
+            base = own[TASK_CAMERA_UID]
+            return dataclasses.replace(base, width=res, height=res, fov=base.fov if fov is None else fov)
+        if spec.preset == "focused":
+            pose = sapien_utils.look_at(eye=FOCUSED_CAMERA_EYE, target=FOCUSED_CAMERA_TARGET)
+            return CameraConfig(TASK_CAMERA_UID, pose, res, res, FOCUSED_CAMERA_FOV if fov is None else fov, 0.01, 100)
+        rig = self.WRIST_RIG
+        return CameraConfig(
+            WRIST_CAMERA_UID, spec.mount_pose(rig), res, res, rig.fov if fov is None else fov, rig.near, 100,
+            mount=self.agent.robot.links_map[rig.mount_link],
         )
-        configs[focused_camera_uid] = dict(
-            fov=FOCUSED_CAMERA_FOV,
-            # [px, py, pz, qw, qx, qy, qz] rather than a Pose: ManiSkill converts the list form
-            # back into a Pose for camera-specific entries, and a plain list keeps env kwargs
-            # json-serializable (recorded into trajectory metadata) and picklable (the replay
-            # tool ships them to spawned worker processes)
-            pose=camera_pose.p[0].tolist() + camera_pose.q[0].tolist(),
-        )
-        return configs
-    raise AssertionError(f"unhandled camera view {view!r}")  # canonical_camera_view guards this
+
+    def _setup_sensors(self, options: dict):
+        if self.camera_specs is not None:
+            agent_cameras = self._agent_camera_uids()
+            unwanted = agent_cameras - {s.uid for s in self.camera_specs}
+            if unwanted:
+                raise ValueError(
+                    f"robot {self.agent.uid!r} carries its own camera(s) {sorted(unwanted)} that `cameras` "
+                    f"does not list, and a robot's cameras cannot be removed; use a robot without them "
+                    f"(e.g. robot_uids='panda') or list them."
+                )
+            # a camera the robot brings takes the spec's size and fov; the viewpoint perturbation
+            # (PerturbationClassesMixin) merges its own pose over this afterwards
+            custom = dict(self._custom_sensor_configs or {})
+            for spec in self.camera_specs:
+                if spec.uid in agent_cameras:
+                    entry = dict(custom.get(spec.uid, {}), width=int(spec.resolution), height=int(spec.resolution))
+                    if spec.fov is not None:
+                        entry["fov"] = float(np.deg2rad(spec.fov))
+                    if spec.remounted:
+                        raise ValueError(
+                            f"camera {spec.name!r}: pitch/offset need the wrist camera mounted by `cameras`, but "
+                            f"robot {self.agent.uid!r} brings its own; use a robot without one (robot_uids='panda')."
+                        )
+                    custom[spec.uid] = entry
+            self._custom_sensor_configs = custom
+        super()._setup_sensors(options)
+        if self.camera_specs is not None:
+            # keep the listed order (BaseEnv puts the agent's cameras last)
+            self._sensors = {s.uid: self._sensors[s.uid] for s in self.camera_specs}
 
 
-def _register_wrist_camera_panda():
-    """Point the `panda` uid at `PandaHandCam`, once per process.
+def supports_cameras(task_cls: type) -> bool:
+    return issubclass(task_cls, CamerasMixin)
 
-    Process-wide and permanent, unlike the task-class swap below, because the agent is rebuilt
-    from this registry on every reconfiguration (`BaseEnv._load_agent`), not just at construction:
-    restoring the stock Panda afterwards would silently drop the wrist camera the next time a
-    dataset-recording env reconfigures. The cost is that a *later* `camera_view="default"` env
-    for a `panda` task in the same process also gets a hand_camera, and hence a wider observation
-    space than it would have alone -- see the warning in `camera_view_applied`.
+
+def check_cameras(env, cameras) -> None:
+    """Assert the built env renders exactly the listed cameras, at their resolutions.
+
+    Catches what ManiSkill would otherwise let through silently: a `sensor_configs` override for a
+    uid nothing has (ignored), a camera the robot added on its own, a size that did not apply.
     """
-    spec = REGISTERED_AGENTS.get(PandaHandCam.uid)
-    if spec is not None and spec.agent_cls is PandaHandCam:
-        return
-    register_agent(override=True)(PandaHandCam)
-
-
-@contextlib.contextmanager
-def _task_without_default_sensors(task_name: str):
-    """Build `task_name` from a subclass whose `_default_sensor_configs` is empty.
-
-    `BaseEnv._setup_sensors` builds its sensor set as the task's `_default_sensor_configs` plus
-    the agent's, so emptying the former is the only way to drop a task's own camera --
-    `sensor_configs` can retune a camera but never remove one.
-
-    Done by swapping the class the registry instantiates for the duration of the `gym.make` call
-    rather than by patching the task class in place (which is what `replay_trajectory.py` used to
-    do). The instance is left permanently on the subclass, so a later reconfiguration still sees
-    the empty set, while other envs of the same task id in this process are untouched.
-    """
-    spec = REGISTERED_ENVS.get(task_name)
-    if spec is None:
-        # let gym.make raise its own error about the unknown id
-        yield
-        return
-    original_cls = spec.cls
-    spec.cls = type(
-        f"{original_cls.__name__}NoDefaultSensors",
-        (original_cls,),
-        {"_default_sensor_configs": property(lambda self: [])},
-    )
-    try:
-        yield
-    finally:
-        spec.cls = original_cls
-
-
-_wrist_agent_registered = False
-
-
-@contextlib.contextmanager
-def camera_view_applied(
-    camera_view: str, task_name: str, wrist_only: bool = True, rig: WristRig = PANDA_RIG
-):
-    """Hold the side effects `camera_view` needs, for the duration of a `gym.make` call.
-
-    Only the wrist view needs any: a camera has to be added to the robot (the link to mount it on
-    does not exist until `gym.make` has built the scene, so it cannot come from `sensor_configs`)
-    and, under `wrist_only`, the task's own camera has to be removed or `BaseEnv` renders it and
-    `RecordEpisode` writes it into every episode alongside the wrist view -- roughly doubling both
-    the render cost and the dataset size for frames nothing reads. `render_mode="rgb_array"` is
-    unaffected either way: it renders from the separate human render camera.
-
-    Re-entered per process by design, since the replay tool's CPU path uses `mp.Pool` with the
-    spawn start method and its children inherit neither the agent registry nor the class swap.
-    """
-    global _wrist_agent_registered
-    view = canonical_camera_view(camera_view)
-
-    if view != "wrist":
-        if _wrist_agent_registered:
-            logger.warning(
-                f"Building a camera_view={view!r} env after a camera_view='wrist' one in the same "
-                f"process: the `panda` uid still resolves to PandaHandCam, so this env will also "
-                f"carry a {WRIST_CAMERA_UID} (and a correspondingly wider observation space). "
-                "Build the two views in separate processes if that matters."
-            )
-        yield
-        return
-
-    if rig is PANDA_RIG:
-        # only the Panda needs a camera added to it; the FR3 agent carries its own (see `fr3`)
-        _register_wrist_camera_panda()
-        _wrist_agent_registered = True
-    if wrist_only:
-        with _task_without_default_sensors(task_name):
-            yield
-    else:
-        yield
-
-
-def check_camera_view(
-    env, camera_view: str, focused_camera_uid: str = FOCUSED_CAMERA_UID
-) -> None:
-    """Assert the camera `camera_view` promised is actually in the built scene.
-
-    Both non-default views address a camera by uid, and ManiSkill ignores a `sensor_configs` entry
-    whose uid no camera matches. Without this check, a task whose external camera is not called
-    `base_camera`, or one whose robot never got a wrist camera, would render its own default view
-    and report nothing -- the exact failure that is invisible until the dataset is trained on.
-    """
-    view = canonical_camera_view(camera_view)
-    required = {"focused": focused_camera_uid, "wrist": WRIST_CAMERA_UID}.get(view)
-    if required is None:
+    specs = resolve_cameras(cameras)
+    if specs is None:
         return
     sensors = getattr(env.unwrapped, "_sensors", {})
-    if required not in sensors:
-        raise ValueError(
-            f"camera_view={view!r} configures the camera {required!r}, but "
-            f"{env.unwrapped.spec.id if env.unwrapped.spec else type(env.unwrapped).__name__} "
-            f"built sensors {sorted(sensors)}. Nothing was overridden, so these observations are "
-            "the task's own default view."
-        )
+    if list(sensors) != [s.uid for s in specs]:
+        raise ValueError(f"cameras {[s.to_config() for s in specs]} built sensors {list(sensors)}")
+    for spec in specs:
+        config = sensors[spec.uid].config
+        if (config.width, config.height) != (spec.resolution, spec.resolution):
+            raise ValueError(f"camera {spec.name!r} renders {config.width}x{config.height}, not {spec.resolution}")

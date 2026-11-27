@@ -63,7 +63,7 @@ def font(size: int):
 
 def render_axis(task: str, axis: str, seed: int):
     """{parameter: [(value, held_out, scene_frame, wrist_frame), ...]} for every parameter of `axis`."""
-    env = make_env(task, obs_mode="rgb", camera_view="wrist", sim_backend="physx_cpu", robot_init_qpos_noise=0.0,
+    env = make_env(task, obs_mode="rgb", cameras=[{"name": "wrist", "preset": "wrist"}], sim_backend="physx_cpu", robot_init_qpos_noise=0.0,
                    domain_randomization=[axis])
     base = env.unwrapped
     ranges = RANGES[axis]

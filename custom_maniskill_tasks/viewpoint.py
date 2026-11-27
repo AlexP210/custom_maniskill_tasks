@@ -4,7 +4,7 @@ A `ViewpointConfig` is a shift in the camera's own frame -- a translation (m), y
 (rad) and an absolute fov -- and `wrist_camera_local_pose` is the camera's pose in its link's frame
 once shifted, which is what `sensor_configs` takes. The `viewpoint` perturbation class
 (`perturbation_classes`) draws the shift; `PerturbationClassesMixin` poses the camera with it, and
-`check_viewpoint` asserts it got there. Only the wrist camera (`camera_view="wrist"`) can be moved.
+`check_viewpoint` asserts it got there. Only a `wrist` camera (`cameras`) can be moved.
 """
 
 from __future__ import annotations
@@ -88,15 +88,15 @@ def rig_for_task(task_name: str) -> WristRig:
 
 def check_viewpoint(env, config: ViewpointConfig) -> None:
     """Assert the wrist camera in the built env is where `config` put it. The failure it catches
-    is a shift that silently did not happen: no wrist camera to move (a different `camera_view`),
-    or a camera mounted somewhere other than `WRIST_CAMERA_LOCAL_POSE`."""
+    is a shift that silently did not happen: no wrist camera to move (none in `cameras`),
+    or a camera mounted somewhere other than its rig's `local_pose`."""
     if config.is_default:
         return
     sensors = env.unwrapped._sensors
     if WRIST_CAMERA_UID not in sensors:
         raise ValueError(
             f"a viewpoint was asked for, but this env has no {WRIST_CAMERA_UID!r} to move; use "
-            "camera_view='wrist'."
+            "list a `wrist` camera in `cameras`."
         )
     camera = sensors[WRIST_CAMERA_UID]
     built = camera.camera.local_pose

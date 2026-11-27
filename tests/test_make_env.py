@@ -1,10 +1,8 @@
 """`make_env` against the real simulator: `python tests/test_make_env.py`.
 
 Everything here runs on physx_cpu at num_envs=1, because sapien can only enable GPU PhysX once per
-process and never after CPU PhysX has been touched. The camera tests run default -> focused ->
-wrist deliberately: the wrist view repoints the `panda` agent uid process-wide (see
-`cameras._register_wrist_camera_panda`), so a default-view env built afterwards would also carry a
-hand_camera.
+process and never after CPU PhysX has been touched. Cameras are per env (`cameras`), so the camera
+tests can run in any order.
 """
 
 import numpy as np
@@ -95,26 +93,43 @@ def test_frame_stack_shape_and_history():
     env.close()
 
 
-def test_camera_views():
-    for view, expected in [
-        ("default", ["base_camera"]),
-        ("standard", ["base_camera"]),  # the old spelling of "default"
-        ("focused", ["base_camera"]),
-        ("wrist", ["hand_camera"]),  # keep last: the agent override is process-wide
-    ]:
-        env = make_env(TASK, obs_mode="rgb", camera_view=view, camera_resolution=128)
-        assert sorted(env.unwrapped._sensors) == expected, (view, sorted(env.unwrapped._sensors))
+def test_camera_presets():
+    for preset, uid in [("task", "base_camera"), ("focused", "base_camera"), ("wrist", "hand_camera")]:
+        env = make_env(TASK, obs_mode="rgb", cameras=[{"name": "cam", "preset": preset, "resolution": 128}])
+        assert list(env.unwrapped._sensors) == [uid], (preset, list(env.unwrapped._sensors))
         obs, _ = env.reset(seed=0)
-        rgb = obs["sensor_data"][expected[0]]["rgb"]
-        assert rgb.shape == (1, 128, 128, 3), (view, rgb.shape)
+        rgb = obs["sensor_data"][uid]["rgb"]
+        assert rgb.shape == (1, 128, 128, 3), (preset, rgb.shape)
         env.close()
 
     try:
-        make_env(TASK, camera_view="birds_eye")
+        make_env(TASK, cameras=[{"name": "cam", "preset": "birds_eye"}])
     except ValueError as error:
         assert "birds_eye" in str(error)
     else:
-        raise AssertionError("an unknown camera_view must be rejected")
+        raise AssertionError("an unknown preset must be rejected")
+
+
+def test_several_cameras_each_at_its_own_resolution_in_list_order():
+    cameras = [{"name": "wrist", "preset": "wrist", "resolution": 96}, {"name": "scene", "preset": "task", "resolution": 64}]
+    env = make_env(TASK, obs_mode="rgb", cameras=cameras)
+    obs, _ = env.reset(seed=0)
+    assert list(obs["sensor_data"]) == ["hand_camera", "base_camera"]
+    assert obs["sensor_data"]["hand_camera"]["rgb"].shape == (1, 96, 96, 3)
+    assert obs["sensor_data"]["base_camera"]["rgb"].shape == (1, 64, 64, 3)
+    assert env.unwrapped.spec.kwargs["cameras"] == cameras, "recorded, so a replay builds the same cameras"
+    env.close()
+
+
+def test_a_wrist_camera_does_not_leak_into_later_envs():
+    """The retired `camera_view="wrist"` registered a camera-carrying Panda for the whole process."""
+    make_env(TASK, cameras=[{"name": "wrist", "preset": "wrist"}]).close()
+    env = make_env(TASK, obs_mode="rgb", cameras=[{"name": "scene", "preset": "task"}])
+    assert list(env.unwrapped._sensors) == ["base_camera"]
+    env.close()
+    env = make_env(TASK, obs_mode="rgb")
+    assert list(env.unwrapped._sensors) == ["base_camera"], "cameras=None: the task's own, untouched"
+    env.close()
 
 
 def test_image_frames_are_not_aliased():
@@ -123,8 +138,7 @@ def test_image_frames_are_not_aliased():
     Without the copy every frame in the stack is the current one, which looks like a working env
     right up until a model is asked to infer motion from it.
     """
-    # the focused view rather than the wrist one, so this test leaves the agent registry alone
-    env = make_env(TASK, obs_mode="rgb", camera_view="focused", camera_resolution=64, n_frames=3)
+    env = make_env(TASK, obs_mode="rgb", cameras=[{"name": "scene", "preset": "focused", "resolution": 64}], n_frames=3)
     env.reset(seed=0)
     for _ in range(3):
         obs, *_ = env.step(ACTION)
@@ -141,7 +155,9 @@ if __name__ == "__main__":
         test_frame_skip_matches_stepping_one_at_a_time,
         test_frame_stack_shape_and_history,
         test_image_frames_are_not_aliased,
-        test_camera_views,  # last: leaves the `panda` uid pointing at PandaHandCam
+        test_camera_presets,
+        test_several_cameras_each_at_its_own_resolution_in_list_order,
+        test_a_wrist_camera_does_not_leak_into_later_envs,
     ]
     for test in tests:
         test()

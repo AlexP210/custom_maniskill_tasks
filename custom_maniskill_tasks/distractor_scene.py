@@ -4,7 +4,8 @@ A task gets distractors from two mixins and one helper:
 
 - `SceneCameraMixin` puts the agent on the plain `panda` (no wrist camera rendered for nothing) and
   observes the task through a `base_camera` in front of the table (`SCENE_CAMERA_EYE`), framed
-  so the agent and both distractor stations (`distractor_robots.STATIONS`) stay in view. On its
+  so the agent and both distractor stations (`distractor_robots.STATIONS`) stay in view. Since
+  2026-11-24 `render()`'s `render_camera` (videos) shares that pose and fov, at 512 px. On its
   own, with no distractors, it gives the matching control scene.
 - `DistractorRobotsMixin` (`distractor_robots`) adds the scripted Pandas and their cubes and pads.
 - `BackdropVideoMixin` (`backdrop_video`) adds the `background_video` kwarg: off by default, or a
@@ -48,27 +49,42 @@ down) that read as bird's-eye; the peg is ~14% larger in this one. Runs launched
 the old view. It depends on the stations, not the task, so every distractor task shares it."""
 
 
+RENDER_CAMERA_RESOLUTION = 512
+"""The stock tabletop tasks' render camera resolution, kept."""
+
+
 class SceneCameraMixin:
     """The agent on the plain `panda`, observed through the front `base_camera` (module doc)."""
 
     def __init__(self, *args, robot_uids="panda", **kwargs):
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
-    @property
-    def _default_sensor_configs(self):
+    def _task_sensor_configs(self):
+        # the task's own camera, as `CamerasMixin`'s `task` preset finds it
         pose = sapien_utils.look_at(SCENE_CAMERA_EYE, SCENE_CAMERA_TARGET)
         return [CameraConfig("base_camera", pose, 128, 128, SCENE_CAMERA_FOV, 0.01, 100)]
 
+    @property
+    def _default_human_render_camera_configs(self):
+        # `render()`'s camera (logged videos) at the observation camera's pose and fov, so all three
+        # robots are in the videos too; the task's own render camera is framed on the agent alone.
+        # Unlike the observation camera, it ignores the `viewpoint` perturbation.
+        pose = sapien_utils.look_at(SCENE_CAMERA_EYE, SCENE_CAMERA_TARGET)
+        return CameraConfig("render_camera", pose, RENDER_CAMERA_RESOLUTION, RENDER_CAMERA_RESOLUTION, SCENE_CAMERA_FOV, 0.01, 100)
 
-def distractor_task(base_cls: type, name: str, doc: str, **class_attrs) -> type:
+
+def distractor_task(base_cls: type, name: str, doc: str, distractors_mixin: type = DistractorRobotsMixin, **class_attrs) -> type:
     """`base_cls` (a `-v1.1` task class) with the scene camera, the plain panda, distractor robots
     and the (default off) background video.
 
     `class_attrs` override per-task tuning, e.g. `distractor_max_start_delay`. A `base_cls` that
-    already has `SceneCameraMixin` in its bases is not given it twice.
+    already has `SceneCameraMixin` in its bases is not given it twice. `distractors_mixin` is the
+    distractors' own mixin: `DistractorRobotsMixin` or a subclass (`peg_distractor_robots`).
     """
+    if not issubclass(distractors_mixin, DistractorRobotsMixin):
+        raise TypeError(f"{distractors_mixin!r} is not a DistractorRobotsMixin")
     scene = () if issubclass(base_cls, SceneCameraMixin) else (SceneCameraMixin,)
-    bases = (DistractorRobotsMixin, BackdropVideoMixin, *scene, base_cls)
+    bases = (distractors_mixin, BackdropVideoMixin, *scene, base_cls)
     if "panda" not in getattr(base_cls, "SUPPORTED_ROBOTS", ["panda"]):
         raise ValueError(f"{base_cls.__name__} does not support the plain panda the distractor scene uses")
     return type(name, bases, {"__doc__": doc, "__module__": __name__, **class_attrs})

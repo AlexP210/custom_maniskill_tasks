@@ -49,6 +49,26 @@ def test_control_scene_has_no_distractors():
     env.close()
 
 
+def test_still_distractors_hold_the_same_scene():
+    """`distractors_still` keeps the seed's scene and removes only the motion."""
+    states = {}
+    for still in (False, True):
+        env = make_env(TASK, distractors_still=still)
+        env.reset(seed=3)
+        u = env.unwrapped
+        start = u.distractor_state()
+        for _ in range(40):
+            env.step(torch.as_tensor(env.action_space.sample()))
+        states[still] = (start, u.distractor_state())
+        env.close()
+    (moving0, moving1), (still0, still1) = states[False], states[True]
+    for key in still0:
+        torch.testing.assert_close(still0[key], moving0[key])
+    assert (moving1["qpos"] - moving0["qpos"]).abs().max() > 0.1, "the moving distractors never moved"
+    torch.testing.assert_close(still1["qpos"], still0["qpos"], atol=1e-4, rtol=0)
+    torch.testing.assert_close(still1["object_p"], still0["object_p"], atol=1e-3, rtol=0)
+
+
 def test_success_does_not_terminate():
     env = make_env(TASK, ignore_terminations=False)
     env.reset(seed=0)
@@ -75,9 +95,10 @@ def test_task_draws_match_v1_1_per_seed():
         torch.testing.assert_close(a, b)
 
 
-def test_distractors_start_early_and_lift_within_the_episode():
+def test_tour_distractors_start_early_and_lift_within_the_episode():
+    """The pre-2026-11-23 cube tour (`distractor_task="pick_place"`)."""
     for seed in (0, 1, 2, 3):
-        env = make_env(TASK)
+        env = make_env(TASK, distractor_task="pick_place")
         env.reset(seed=seed)
         u = env.unwrapped
         assert int(u._distractor_delay.max()) <= LIFT_PEG_MAX_START_DELAY
@@ -160,3 +181,109 @@ def test_scene_camera_frames_all_three_robots_the_cube_and_the_goal():
             env.step(_zero(env))
     assert worst > 0.05, f"a point came within {worst:.0%} of the frame edge"
     env.close()
+
+
+def test_tour_start_pins_the_distractors_and_nothing_else():
+    """`distractor_tour_start` changes where the distractors' cubes start; the task's draws, the
+    per-episode delays and the cube jitter stay what the seed gives (the distractor probe's conditions)."""
+    import pytest
+    from custom_maniskill_tasks.distractor_robots import STATIONS
+
+    states = {}
+    for start in (0, 2):
+        env = make_env("PickCube-MultiArmDistractors", distractor_task="pick_place", distractor_tour_start=start)
+        env.reset(seed=5)
+        u = env.unwrapped
+        assert (u._distractor_start == start).all()
+        states[start] = dict(cube=u.cube.pose.raw_pose.clone(), goal=u.goal_site.pose.p.clone(),
+                             delay=u._distractor_delay.clone(), state=u.distractor_state())
+        env.close()
+    torch.testing.assert_close(states[0]["cube"], states[2]["cube"], rtol=0, atol=0)
+    torch.testing.assert_close(states[0]["goal"], states[2]["goal"], rtol=0, atol=0)
+    torch.testing.assert_close(states[0]["delay"], states[2]["delay"], rtol=0, atol=0)
+    s0, s2 = states[0]["state"], states[2]["state"]
+    assert s0["qpos"].shape == (1, 2, 9) and s0["object_p"].shape == (1, 2, 3) and s0["object_q"].shape == (1, 2, 4)
+    # the cubes sit on different pads of the tour, jittered the same way
+    for k, name in enumerate(("left", "right")):
+        tour = STATIONS[name].tour
+        pads = np.array([STATIONS[name].pads[i] for i in tour])
+        offset0 = s0["object_p"][0, k, :2].numpy() - pads[0]
+        offset2 = s2["object_p"][0, k, :2].numpy() - pads[2]
+        np.testing.assert_allclose(offset0, offset2, atol=1e-6)
+    with pytest.raises(ValueError, match="distractor_tour_start"):
+        make_env("PickCube-MultiArmDistractors", distractor_task="pick_place", distractor_tour_start=4)
+    with pytest.raises(ValueError, match="distractor_tour_start"):  # the pick_cube distractors have no tour
+        make_env("PickCube-MultiArmDistractors", distractor_tour_start=0)
+
+
+def _idle(env):
+    a = _zero(env)
+    a[-1] = 1.0
+    return a
+
+
+def test_pick_cube_distractors_do_the_task_and_hold_the_goal():
+    """The default distractors (`distractor_task="pick_cube"`) each pick their own cube up and hold it at their goal."""
+    from custom_maniskill_tasks import YAW_CONTROL_MODE
+
+    env = make_env(TASK)
+    for seed in (0, 1, 2):
+        env.reset(seed=seed)
+        u = env.unwrapped
+        assert u.distractor_task == "pick_cube" and u.task_alignment_probability == 0.5
+        assert {r.control_mode for r in u.distractors.values()} == {YAW_CONTROL_MODE}
+        assert env.action_space.shape == (4,), "the agent keeps PickCube's own action space"
+        for _ in range(50):
+            env.step(_idle(env))
+        assert all(bool(ok[0]) for ok in u.distractor_success().values()), (seed, u.distractor_success())
+        assert float(u.cube.pose.p[0, 2]) < 0.03, "the task's cube moved without the agent touching it"
+    env.close()
+
+
+def test_task_alignment_copies_the_agents_set_up_relative_to_each_base():
+    import pytest
+    from custom_maniskill_tasks.distractor_robots import STATIONS
+    from custom_maniskill_tasks.pick_cube_distractor_robots import CUBE_SPAWN_HALF_SIZE, MAX_GOAL_HEIGHT, TASK_CENTRE_AHEAD
+
+    for p, expect_aligned in ((1.0, True), (0.0, False)):
+        env = make_env(TASK, task_alignment_probability=p)
+        for seed in range(4):
+            env.reset(seed=seed)
+            u = env.unwrapped
+            assert bool(u._distractor_aligned[:, 0].all()) == expect_aligned and bool(u._distractor_aligned[:, 0].any()) == expect_aligned
+            agent_xy, agent_goal = u.cube.pose.p[0, :2].numpy(), u.goal_site.pose.p[0].numpy()
+            for k, name in enumerate(u.distractor_names):
+                centre = np.array([STATIONS[name].base[0] + TASK_CENTRE_AHEAD, STATIONS[name].base[1]])
+                xy = u.distractor_cubes[name].pose.p[0, :2].numpy() - centre
+                goal = u._distractor_goal[k, 0].numpy() - np.r_[centre, 0.0]
+                assert np.all(np.abs(xy) <= CUBE_SPAWN_HALF_SIZE + 1e-6) and np.all(np.abs(goal[:2]) <= CUBE_SPAWN_HALF_SIZE + 1e-6)
+                assert 0.02 - 1e-6 <= goal[2] <= 0.02 + MAX_GOAL_HEIGHT + 1e-6
+                same = np.allclose(xy, agent_xy, atol=1e-6) and np.allclose(goal, agent_goal, atol=1e-6) and \
+                    torch.allclose(u.distractor_cubes[name].pose.q[0], u.cube.pose.q[0], atol=1e-6)
+                assert same == expect_aligned, (p, seed, name)
+        env.close()
+    # about half the stations align at the default, and the task's own draws are PickCube-v1.1's either way
+    env = make_env(TASK)
+    aligned = []
+    for seed in range(40):
+        env.reset(seed=seed)
+        aligned += env.unwrapped._distractor_aligned[:, 0].tolist()
+    env.close()
+    assert 0.3 < np.mean(aligned) < 0.7, np.mean(aligned)
+    for bad in (-0.1, 1.5, True):
+        with pytest.raises(ValueError, match="task_alignment_probability"):
+            make_env(TASK, task_alignment_probability=bad)
+    with pytest.raises(ValueError, match="distractor_task"):
+        make_env(TASK, distractor_task="peg_insertion")
+
+
+def test_distractor_mode_leaves_the_task_draws_alone():
+    poses = {}
+    for task in ("pick_cube", "pick_place"):
+        env = make_env(TASK, distractor_task=task)
+        env.reset(seed=11)
+        u = env.unwrapped
+        poses[task] = (u.cube.pose.raw_pose.clone(), u.goal_site.pose.p.clone(), u.agent.robot.get_qpos().clone())
+        env.close()
+    for a, b in zip(*poses.values()):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)

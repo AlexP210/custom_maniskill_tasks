@@ -64,6 +64,7 @@ from mani_skill.utils.structs.pose import Pose
 from mani_skill.envs.tasks.tabletop.lift_peg_upright import LiftPegUprightEnv
 from mani_skill.utils.scene_builder.table import TableSceneBuilder
 
+from custom_maniskill_tasks.cameras import CamerasMixin
 from custom_maniskill_tasks.lighting import LightingMixin
 from custom_maniskill_tasks.perturbation_classes import SPLITS, resolve_perturbations
 from custom_maniskill_tasks.perturbation_mixin import PerturbationClassesMixin
@@ -247,7 +248,7 @@ class _MarkedPegScene(LiftPegUprightEnv):
     control_mode=CONTROL_MODE,
 )
 class LiftPegUprightMarkedEnv(
-    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, _MarkedPegScene
+    FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, _MarkedPegScene
 ):
     """LiftPegUpright-v1.1 where the peg must stand on its marked end (see the module docstring).
 

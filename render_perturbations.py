@@ -64,7 +64,7 @@ def row_cells(aspect) -> list[tuple[str, float | str, bool]]:
 
 
 def render(task: str, perturbations: dict, seed: int) -> dict[str, np.ndarray]:
-    env = make_env(task, obs_mode="rgb", camera_view="wrist", sim_backend="physx_cpu", robot_init_qpos_noise=0.0,
+    env = make_env(task, obs_mode="rgb", cameras=[{"name": "wrist", "preset": "wrist"}], sim_backend="physx_cpu", robot_init_qpos_noise=0.0,
                    perturbations=perturbations)
     obs, _ = env.reset(seed=seed)
     frames = {

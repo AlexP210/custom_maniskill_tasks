@@ -25,9 +25,9 @@ Importing the package registers the ids this project's datasets are collected wi
 | `PegInsertionSide-v1.1` | `PegInsertionSide-v1` with no early termination, on the plain `panda` with the stock `base_camera` only (no wrist camera). Stock geometry (box turned up to 22.5°, 3 mm clearance). Default control mode **`pd_ee_delta_pos_yaw`** (5-D: xyz, yaw, gripper; see [Yaw control](#yaw-control-pd_ee_delta_pos_yaw)), unlike the other ids' 4-D `pd_ee_delta_pos`, since only a hand that can turn can match the box's angle |
 | `PushCube-FR3`, `PlaceSphere-FR3`, `LiftPegUpright-FR3`, `PokeCube-FR3`, `PickCube-FR3`, `PickSingleYCB-FR3` | the `-v1.1` task of the same name on the Franka Research 3, with the real robot's ZED mini wrist camera: see [FR3 and the ZED mini](#fr3-and-the-zed-mini--fr3) |
 | `LiftPegUpright-HarderPerception` | `LiftPegUpright-v1.1` where the peg must stand on its *marked* end, told apart from the other end only by the markings' shape: see [The marked peg](#the-marked-peg-liftpegupright-harderperception) |
-| `PegInsertionSide-MultiArmDistractors` | `PegInsertionSide-v1.1` (same 5-D control) with scripted Panda distractors beside the agent and the scene camera moved in front of the table, looking down at 30°, so all three robots are in frame; each pick-and-placing a cube between two pads; `distractor_robots=["left"]`, `["right"]` or both (the default), `[]` for the control scene. See `peg_insertion.py` / `distractor_robots.py` |
+| `PegInsertionSide-MultiArmDistractors` | `PegInsertionSide-v1.1` (same 5-D control) with scripted Panda distractors beside the agent and the scene camera moved in front of the table, looking down at 30°, so all three robots are in frame; each pick-and-placing a cube between two pads; `distractor_robots=["left"]`, `["right"]` or both (the default), `[]` for the control scene. `distractor_task="peg_insertion"` gives each distractor a peg and box of its own (looking like the agent's), which it picks up, inserts, pulls out and puts back every 110 steps, instead of the cubes (`pick_place`, the default). See `peg_insertion.py` / `distractor_robots.py` / `peg_distractor_robots.py` |
 | `LiftPegUpright-MultiArmDistractors` | `LiftPegUpright-v1.1` in the same distractor scene (plain `panda`, front `base_camera`, scripted distractors, `distractor_robots` as there). Built by `distractor_scene.distractor_task`; add other tasks in `distractor_tasks.py` |
-| `PickCube-MultiArmDistractors` | `PickCube-v1.1` in the same distractor scene, with the distractors carrying copies of the task's red cube and no pads drawn. The goal marker stays hidden, so the target is only in `goal_pos`. 50 steps; distractors start within 5 steps |
+| `PickCube-MultiArmDistractors` | `PickCube-v1.1` in the same distractor scene, the distractors' cubes copies of the task's red cube. Each distractor does PickCube itself (`distractor_task="pick_cube"`, the default since 2026-11-23): its own cube and goal from PickCube's distributions relative to its base, or, with `task_alignment_probability` (default 0.5, per env and distractor), the agent's own set-up; it picks the cube up and holds it at its goal (`pick_cube_distractor_robots.py`). `distractor_task="pick_place"` is the earlier cube tour (no pads drawn), which runs before 2026-11-23 trained with. All goal markers stay hidden, so the agent's target is only in `goal_pos`. 50 steps; distractors start within 5 steps |
 
 Every `-MultiArmDistractors` id also takes `background_video` (default `None`): a clip path, or
 `{"path", "frames", "brightness"}`, for a looping video wall behind the scene (`backdrop_video.py`),
@@ -135,7 +135,7 @@ Classes not named are `default`.
 
 ```python
 env = make_env(
-    "PickCube-v1.1", camera_view="wrist",
+    "PickCube-v1.1", cameras=[{"name": "wrist", "preset": "wrist"}],
     perturbations={
         "lighting": {"temperature": "randomize-train", "brightness": 1.5},  # direction stays stock
         "table_colour": "randomize-train",
@@ -149,7 +149,7 @@ env.unwrapped.episode_perturbations   # what the current episode drew, as {class
 Fixed values are checked against the aspect's full range and anything outside it raises, as does
 an unknown class, aspect or split: a perturbation that quietly did not happen looks exactly like a
 policy that is robust to it. Asking for any on a stock `-v1` id raises too, and so does
-`viewpoint` without `camera_view="wrist"`.
+`viewpoint` without a `wrist` camera in `cameras`.
 
 Anything randomized rebuilds the scene on every reset (`reconfiguration_freq=1`, roughly half a
 second), since lights, materials and textures cannot change once the renderer has them and the
@@ -176,9 +176,8 @@ env = make_env(
     "PushCube-v1.1",
     obs_mode="rgb",
     control_mode="pd_ee_delta_pos",
-    camera_view="wrist",     # "default" | "focused" | "wrist"
+    cameras=[{"name": "wrist", "preset": "wrist", "resolution": 224}],  # see Cameras
     perturbations=None,      # see Perturbations: {"lighting": "randomize-train", ...}
-    camera_resolution=224,
     frame_skip=3,            # one step takes 3 concatenated actions
     n_frames=2,              # observations are the last 2 (macro) frames, stacked
 )
@@ -203,33 +202,45 @@ gym.make -> IgnoreTerminations -> FrameSkip -> obs_wrappers -> FrameStack
 observation dict, DINO-WM's flat state/proprio one). It sits below `FrameStack`, so it sees single
 unstacked frames; pass `frame_axis=0` when it squeezes ManiSkill's leading `num_envs` axis away.
 
-## Camera views
+## Cameras
 
-`camera_view` picks the camera the *observations* come from. `env.render()` is unaffected: it uses
-ManiSkill's separate human render camera.
+`cameras` lists the cameras the *observations* come from, each a `{name, preset, resolution, fov}`
+spec (`cameras.py`); the env renders exactly those, in that order, and nothing else.
+`env.render()` is unaffected: it uses ManiSkill's separate human render camera.
 
-| view | what it is |
-| --- | --- |
-| `default` (a.k.a. `standard`) | the task's own `base_camera`, at its registered pose and fov |
-| `focused` | that camera re-posed onto the tabletop workspace, through a narrow 36 degree fov |
-| `wrist` | a hand-mounted fisheye (0.6π fov); the task's own camera is dropped unless `wrist_only=False` |
+```python
+env = make_env("PickCube-MultiArmDistractors", cameras=[
+    {"name": "scene", "preset": "task", "resolution": 224},
+    {"name": "wrist", "preset": "wrist", "resolution": 128},
+])
+obs["sensor_data"]["base_camera"]["rgb"], obs["sensor_data"]["hand_camera"]["rgb"]   # 224 and 128 px
+```
+
+| preset | sensor uid | what it is |
+| --- | --- | --- |
+| `task` | `base_camera` | the task's own camera at its registered pose and fov (the distractor tasks' front scene camera) |
+| `focused` | `base_camera` | that camera re-posed onto the tabletop workspace, through a narrow 36 degree fov |
+| `wrist` | `hand_camera` | on the hand, as the robot's `WristRig` says: the Panda's 108 degree fisheye realsense, the FR3's ZED mini |
+
+- `name` (lowercase, unique) is what agents call the camera: they expose its frames as
+  `<name>_rgb` (`CameraSpec.observation_key`). The env itself reports them under the uid.
+- `resolution` is square, default 224; `fov` (degrees) replaces the preset's.
+- Two cameras cannot share a uid (`task` with `focused`), and an empty list is refused.
+- `cameras=None` (the default) leaves the task's own cameras exactly as registered, at ManiSkill's
+  128 px.
+
+The cameras are built per env by `CamerasMixin`, which every task id here carries; for a stock
+`-v1` id `make_env` builds it from a subclass that adds the mixin. The list is an env kwarg, so it
+is recorded in `env.spec.kwargs` and a replay of a recorded trajectory rebuilds the same cameras. A
+robot that carries a camera of its own (`panda_wristcam`) has it adopted by the `wrist` preset
+(resized to the spec), and is refused when the list does not ask for it, since a robot's camera
+cannot be removed.
 
 The poses, fovs and the 224 default resolution are the ones every recorded dataset in this project
-was rendered through — data, not tunables. A dataset recorded through one view is useless to a
-policy running in another, so `make_env` fails loudly if the view it was asked for is not in the
-built scene rather than quietly handing back the task default.
-
-Two caveats inherited from ManiSkill:
-
-- `camera_view="wrist"` on a task whose robot has no wrist camera (`PushCube-v1`, `PlaceSphere-v1`,
-  anything on plain `panda`) has to repoint the `panda` agent uid at `PandaHandCam`, and that is
-  process-wide and permanent — the agent is rebuilt from the registry on every reconfiguration, so
-  it cannot be scoped to one env. Building a `default`-view env for a `panda` task afterwards in
-  the same process gives it a wrist camera too; the module warns when that happens. Build the two
-  views in separate processes. Tasks already on `panda_wristcam` (`PegInsertionSide-v1` and
-  friends) need none of this and keep the robot they were recorded with.
-- `camera_resolution` applies to the default view too, where `ManiSkillTask.make_env` used to leave
-  ManiSkill's own 128. Pass `camera_resolution=None` to reproduce that.
+was rendered through -- data, not tunables; renders are pixel-identical to the retired
+`camera_view` ("default" / "focused" / "wrist"), which could only ever give one camera, and whose
+wrist view registered a camera-carrying Panda for the whole process. `make_env` checks the built
+env renders exactly the listed cameras at their resolutions (`check_cameras`).
 
 ## FrameSkip and FrameStack
 
@@ -259,21 +270,21 @@ motion from it. `tests/test_make_env.py::test_image_frames_are_not_aliased` guar
 
 For sim-to-real: the `-FR3` ids (formerly `-v1.2`) are the `-v1.1` tasks (same scene, dynamics, reward, success
 predicate, 50-step horizon, `pd_ee_delta_pos`, and the same perturbation kwargs) on the robot and
-camera the real setup has -- a Franka Research 3 with a ZED mini on the hand. Use them with
-`camera_view="wrist"`:
+camera the real setup has -- a Franka Research 3 with a ZED mini on the hand. Use them with a
+`wrist` camera:
 
 ```python
-env = make_env("PickCube-FR3", camera_view="wrist")   # 224 x 224 hand_camera, robot "fr3_zed"
+env = make_env("PickCube-FR3", cameras=[{"name": "wrist", "preset": "wrist"}])   # 224 x 224 hand_camera (the ZED)
 ```
 
 **Robot.** ManiSkill has no FR3, so `fr3.py` builds one from Franka's `franka_description`
 (Apache-2.0; URDF and meshes under `custom_maniskill_tasks/assets/fr3`, with its licence and
 NOTICE; `build_fr3_assets.py` regenerates them from a checkout). It shares the Panda's seven joints,
 Franka Hand, 0.1034 m TCP and rest pose, so the controllers and grasp logic are the Panda's;
-the FR3's own joint limits and `fr3_*` names apply. `robot_uids` is `fr3` (arm and hand alone, what
-every other camera view gets) or `fr3_zed` (the same with the camera, which `make_env` picks under
-`camera_view="wrist"` and which is recorded into a trajectory's env kwargs). A `-FR3` task refuses
-another robot. The stock tasks choose their start pose by comparing `robot_uids` to `"panda"`, so
+the FR3's own joint limits and `fr3_*` names apply. `robot_uids` is `fr3` (arm and hand alone);
+the ZED is mounted on it by the `wrist` camera preset (`FR3_ZED_RIG`, on `fr3_hand_tcp`). `fr3_zed`,
+the same robot with the camera built in, is still registered for recordings that name it. A `-FR3`
+task refuses another robot. The stock tasks choose their start pose by comparing `robot_uids` to `"panda"`, so
 `FR3Mixin` has them see a panda while those hooks run; `tests/test_fr3.py` checks the reset TCP
 and joints equal the Panda's on all six tasks and that `PickCube`'s reward takes the panda branch.
 
@@ -328,7 +339,7 @@ reset, ~0.15 s on physx_cpu) and to 0 above it (one draw per parallel env for th
 base end's direction is still redrawn every reset). `perturbations` works as on the `-v1.1` ids.
 
 ```python
-env = make_env("LiftPegUpright-HarderPerception", camera_view="wrist", markings="evaluation", decoy=True)
+env = make_env("LiftPegUpright-HarderPerception", cameras=[{"name": "wrist", "preset": "wrist"}], markings="evaluation", decoy=True)
 ```
 
 ## Tests
@@ -366,16 +377,9 @@ Already using this module:
   `make_env`: it builds the env from the kwargs recorded in the trajectory json, and `RecordEpisode`
   needs one primitive action per step, which `FrameSkip`/`FrameStack` would break.
 
-- [agents/tsd/tsd/tasks/maniskill_task.py](../../agents/tsd/tsd/tasks/maniskill_task.py) —
+- [agents/squeeze2plan/s2p/tasks/maniskill_task.py](../../agents/squeeze2plan/s2p/tasks/maniskill_task.py) —
   `make_env` builds the online env, with TSD's `ManiSkillWrapper` passed in as an `obs_wrappers`
-  entry and `n_frames=cfg.num_frames, frame_axis=0`. Its own `PandaHandCam`, `WRIST_CAMERA_FOV`,
-  `sensor_configs` branches, `StackFrames` and termination suppression are gone (−101 lines).
-
-Still to migrate:
-
-| currently in | replace with |
-| --- | --- |
-| `pushcube_wrapper.py`'s `CAMERA_*` constants and its `gymnasium.make` (DINO-WM, and the copies under agents/TC-WM, agents/dino_bsmpc, agents/sparse_imagination) | `make_env("PushCube-v1", camera_view="focused", ...)`, keeping its flat-state adapter |
+  entry and `n_frames=cfg.num_frames, frame_axis=0`, and `cameras` from the task config's list.
 
 Nothing in this module reaches back into an agent package, so it can be adopted one call site at a
 time.

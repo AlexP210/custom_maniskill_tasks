@@ -100,7 +100,8 @@ FR3_ZED_RIG = WristRig(
     nominal_quaternion=np.array([0.573576, 0.0, 0.819152, 0.0]),  # wxyz
     # the fingertips first show 83% of the way down the image (found from the segmentation mask)
     finger_line=0.80,
-    wrist_robot_uid=FR3_ZED_UID,
+    mount_link="fr3_hand_tcp",
+    near=ZED_NEAR,
 )
 """The ZED mini on the FR3: see the module docstring."""
 

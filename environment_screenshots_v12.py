@@ -35,7 +35,7 @@ COLUMN_TITLES = ("Start", "Visual Obs") + tuple(title for title, _ in LIGHTING_C
 
 def render_start(task_id, seed, **kwargs):
     """(render-camera frame, ZED wrist frame) at the start of the seeded episode."""
-    env = make_env(task_id, obs_mode="rgb", camera_view="wrist", sim_backend="physx_cpu", **kwargs)
+    env = make_env(task_id, obs_mode="rgb", cameras=[{"name": "wrist", "preset": "wrist"}], sim_backend="physx_cpu", **kwargs)
     try:
         obs, _ = env.reset(seed=seed)
         wrist = np.asarray(obs["sensor_data"]["hand_camera"]["rgb"].cpu())[0]

@@ -65,7 +65,7 @@ def main():
     label = lambda m: f"{m} *" if m in held_out else m
 
     env = make_env(
-        "LiftPegUpright-HarderPerception", obs_mode="rgb", camera_view="wrist", camera_resolution=args.resolution,
+        "LiftPegUpright-HarderPerception", obs_mode="rgb", cameras=[{"name": "wrist", "preset": "wrist", "resolution": args.resolution}],
         frame_skip=1, n_frames=1, sim_backend="physx_cpu", markings="full", colours=args.colours,
     )
     robot = robot_state(env, args.seed)

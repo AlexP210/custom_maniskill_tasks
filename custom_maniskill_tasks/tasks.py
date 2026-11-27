@@ -38,6 +38,7 @@ from mani_skill.envs.tasks.tabletop.push_cube import PushCubeEnv
 from mani_skill.utils.registration import REGISTERED_ENVS, register_env
 
 from custom_maniskill_tasks.fr3 import FR3Mixin
+from custom_maniskill_tasks.cameras import CamerasMixin
 from custom_maniskill_tasks.lighting import LightingMixin
 from custom_maniskill_tasks.table_material import TableMaterialMixin
 from custom_maniskill_tasks.perturbation_mixin import PerturbationClassesMixin
@@ -112,7 +113,7 @@ class FullHorizonMixin:
 @register_env(
     "PushCube-v1.1", max_episode_steps=_horizon("PushCube-v1"), control_mode=CONTROL_MODE
 )
-class PushCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PushCubeEnv):
+class PushCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PushCubeEnv):
     """PushCube-v1 with no early termination and the `perturbations` kwarg."""
 
     object_of_interest = "obj"
@@ -122,7 +123,7 @@ class PushCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, Lightin
     "PlaceSphere-v1.1", max_episode_steps=_horizon("PlaceSphere-v1"), control_mode=CONTROL_MODE
 )
 class PlaceSphereFullHorizonEnv(
-    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PlaceSphereEnv
+    FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PlaceSphereEnv
 ):
     """PlaceSphere-v1 with no early termination and the `perturbations` kwarg."""
 
@@ -135,7 +136,7 @@ class PlaceSphereFullHorizonEnv(
     control_mode=CONTROL_MODE,
 )
 class LiftPegUprightFullHorizonEnv(
-    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, LiftPegUprightEnv
+    FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, LiftPegUprightEnv
 ):
     """LiftPegUpright-v1 with no early termination and the `perturbations` kwarg.
 
@@ -167,7 +168,7 @@ class LiftPegUprightFullHorizonEnv(
 @register_env(
     "PokeCube-v1.1", max_episode_steps=_horizon("PokeCube-v1"), control_mode=CONTROL_MODE
 )
-class PokeCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PokeCubeEnv):
+class PokeCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PokeCubeEnv):
     """PokeCube-v1 with no early termination and the `perturbations` kwarg.
 
     Has no single object of interest (a cube and the peg that pokes it), so the `object_colour`
@@ -177,7 +178,7 @@ class PokeCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, Lightin
 @register_env(
     "PickCube-v1.1", max_episode_steps=_horizon("PickCube-v1"), control_mode=CONTROL_MODE
 )
-class PickCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PickCubeEnv):
+class PickCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PickCubeEnv):
     """PickCube-v1 with no early termination and the `perturbations` kwarg."""
 
     object_of_interest = "cube"
@@ -190,7 +191,7 @@ class PickCubeFullHorizonEnv(FullHorizonMixin, PerturbationClassesMixin, Lightin
     control_mode=CONTROL_MODE,
 )
 class PickSingleYCBFullHorizonEnv(
-    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PickSingleYCBEnv
+    FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PickSingleYCBEnv
 ):
     """PickSingleYCB-v1 with no early termination and the `perturbations` kwarg.
 
@@ -211,7 +212,7 @@ class PickSingleYCBFullHorizonEnv(
     reward_mode="sparse",
 )
 class PlugChargerFullHorizonEnv(
-    FullHorizonMixin, PerturbationClassesMixin, LightingMixin, TableMaterialMixin, PlugChargerEnv
+    FullHorizonMixin, PerturbationClassesMixin, CamerasMixin, LightingMixin, TableMaterialMixin, PlugChargerEnv
 ):
     """PlugCharger-v1 with no early termination and the `perturbations` kwarg, observed through the
     stock task's own `base_camera`.
@@ -227,7 +228,7 @@ class PlugChargerFullHorizonEnv(
       camera, so the wrist camera is dropped rather than rendered for nothing (as on
       PegInsertionSide-v1.1). The start pose is unchanged: the stock task sets it only for
       `panda_wristcam`, and the table scene's `panda` pose is the same joint vector with the same
-      noise. `camera_view="wrist"` still works through `make_env`.
+      noise. A `wrist` camera can still be listed in `cameras`.
     - **`table_scene`.** The stock task calls its table scene `scene_builder`; the lighting,
       table-material and appearance perturbations look for `table_scene`, so it is aliased.
 
@@ -258,7 +259,7 @@ FR3_TASKS = {
 }
 """Each `-FR3` id with the `-v1.1` id and class it derives from. Same scene, dynamics, reward,
 success predicate, horizon, control mode and `perturbations` kwarg as the `-v1.1` task; what changes is
-the robot (a Franka Research 3, `fr3.FR3`) and, under `camera_view="wrist"`, the camera (the ZED
+the robot (a Franka Research 3, `fr3.FR3`) and, with a `wrist` camera listed, the camera (the ZED
 mini on the real robot, `fr3.FR3_ZED_RIG`, rendered at the 224 x 224 the policy is given)."""
 
 for _id, (_base_id, _base_cls) in FR3_TASKS.items():

@@ -39,7 +39,7 @@ def render_cell(task, names, seed):
     env = make_env(
         task,
         obs_mode="rgb",
-        camera_view="wrist",
+        cameras=[{"name": "wrist", "preset": "wrist"}],
         lighting="+".join(lighting) if lighting else "default",
         distractors=3 if DISTRACTORS in names else 0,
         sim_backend="physx_cpu",

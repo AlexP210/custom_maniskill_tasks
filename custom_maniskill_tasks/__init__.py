@@ -29,21 +29,21 @@ from custom_maniskill_tasks.perturbation_mixin import (
 )
 from custom_maniskill_tasks.backends import backend_kwargs, resolve_sim_backend
 from custom_maniskill_tasks.cameras import (
-    CAMERA_VIEWS,
+    CAMERA_PRESETS,
     DEFAULT_CAMERA_RESOLUTION,
     FOCUSED_CAMERA_EYE,
     FOCUSED_CAMERA_FOV,
     FOCUSED_CAMERA_TARGET,
-    FOCUSED_CAMERA_UID,
+    TASK_CAMERA_UID,
     WRIST_CAMERA_FOV,
     PANDA_RIG,
     WRIST_CAMERA_UID,
-    PandaHandCam,
+    CameraSpec,
+    CamerasMixin,
     WristRig,
-    build_sensor_configs,
-    camera_view_applied,
-    canonical_camera_view,
-    check_camera_view,
+    cameras_config,
+    check_cameras,
+    resolve_cameras,
 )
 from custom_maniskill_tasks.fr3 import FR3, FR3_UIDS, FR3_ZED_RIG, FR3ZED
 from custom_maniskill_tasks.lighting import (
@@ -56,7 +56,7 @@ from custom_maniskill_tasks.lighting import (
     lighting_config,
     supports_lighting,
 )
-from custom_maniskill_tasks.make_env import TASKS_IN_USE, make_env
+from custom_maniskill_tasks.make_env import TASKS_IN_USE, make_env, with_cameras_kwarg
 from custom_maniskill_tasks.table_material import (
     DEFAULT_TABLE_MATERIAL,
     MATERIALS,
@@ -94,6 +94,8 @@ from custom_maniskill_tasks.marked_peg import (
 # PegInsertionSide-v1.1 / -MultiArmDistractors (scripted distractor robots beside the agent); see
 # `peg_insertion`. Every -MultiArmDistractors id also takes `background_video` (see `backdrop_video`)
 from custom_maniskill_tasks.distractor_robots import STATIONS as DISTRACTOR_STATIONS, DistractorRobotsMixin
+from custom_maniskill_tasks.peg_distractor_robots import DISTRACTOR_TASKS, PegInsertionDistractorsMixin
+from custom_maniskill_tasks.pick_cube_distractor_robots import PICK_CUBE_DISTRACTOR_TASKS, PickCubeDistractorsMixin
 from custom_maniskill_tasks.peg_insertion import (
     PEG_INSERTION_TASKS,
     PegInsertionSideDistractorEnv,
@@ -114,6 +116,7 @@ from custom_maniskill_tasks.distractor_tasks import (
     DISTRACTOR_TASKS,
     LiftPegUprightDistractorEnv,
     PickCubeDistractorEnv,
+    PickCubeShuffledPositionsDistractorEnv,
 )
 from custom_maniskill_tasks.wrappers import (
     DINORewardWrapper,
@@ -131,12 +134,17 @@ __all__ = [
     "DISTRACTOR_TASK_CLASSES",
     "LiftPegUprightDistractorEnv",
     "PickCubeDistractorEnv",
+    "PickCubeShuffledPositionsDistractorEnv",
     "SCENE_CAMERA_EYE",
     "SCENE_CAMERA_FOV",
     "SCENE_CAMERA_TARGET",
     "SceneCameraMixin",
     "distractor_task",
     "DistractorRobotsMixin",
+    "PegInsertionDistractorsMixin",
+    "PickCubeDistractorsMixin",
+    "PICK_CUBE_DISTRACTOR_TASKS",
+    "DISTRACTOR_TASKS",
     "PEG_INSERTION_TASKS",
     "PegInsertionSideDistractorEnv",
     "PEG_INSERTION_CONTROL_MODE",
@@ -159,7 +167,7 @@ __all__ = [
     "perturbation_registry",
     "resolve_perturbations",
     "supports_perturbations",
-    "CAMERA_VIEWS",
+    "CAMERA_PRESETS",
     "CONTROL_MODE",
     "DEFAULT_CAMERA_RESOLUTION",
     "DEFAULT_LIGHTING",
@@ -175,7 +183,7 @@ __all__ = [
     "FOCUSED_CAMERA_EYE",
     "FOCUSED_CAMERA_FOV",
     "FOCUSED_CAMERA_TARGET",
-    "FOCUSED_CAMERA_UID",
+    "TASK_CAMERA_UID",
     "FrameSkip",
     "FR3",
     "FR3_TASKS",
@@ -189,7 +197,8 @@ __all__ = [
     "LightingMixin",
     "LiftPegUprightFullHorizonEnv",
     "PANDA_RIG",
-    "PandaHandCam",
+    "CameraSpec",
+    "CamerasMixin",
     "PickCubeFullHorizonEnv",
     "PickSingleYCBFullHorizonEnv",
     "PlugChargerFullHorizonEnv",
@@ -197,15 +206,15 @@ __all__ = [
     "PokeCubeFullHorizonEnv",
     "PushCubeFullHorizonEnv",
     "TASKS_IN_USE",
+    "with_cameras_kwarg",
     "WRIST_CAMERA_FOV",
     "WRIST_CAMERA_UID",
     "WristRig",
     "apply_lighting",
     "backend_kwargs",
-    "build_sensor_configs",
-    "camera_view_applied",
-    "canonical_camera_view",
-    "check_camera_view",
+    "cameras_config",
+    "check_cameras",
+    "resolve_cameras",
     "check_lighting",
     "clone_observations",
     "make_env",

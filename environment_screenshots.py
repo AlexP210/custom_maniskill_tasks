@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve().parent
 # the expert's env and network are rebuilt by the script that recorded its demos, so the rollout
 # here cannot drift from the one the datasets came from
 sys.path.insert(0, str(HERE.parents[1] / "tools"))
-from make_expert_demos import build_env, load_agent, resolve_backends  # noqa: E402
+from make_expert_demos import build_env, load_agent, resolve_backends, summary_cameras  # noqa: E402
 from ppo_visual_expert_fast import as_obs_td  # noqa: E402
 
 EXPERTS_DIR = Path("/data/AlexPleava/datasets/maniskill")
@@ -50,7 +50,7 @@ FONT_SIZE = 38
 COLUMN_TITLES = ("Start", "Visual Obs", "Goal") + tuple(title for title, _ in LIGHTING_COLUMNS)
 """All but "Visual Obs" come from `env.render()`, i.e. each task's own `render_camera`
 (`_default_human_render_camera_configs`): the 512x512 three-quarter view ManiSkill's docs and
-videos show, which no `camera_view` here touches. "Visual Obs" is the wrist camera a policy
+videos show, which no `cameras` entry here touches. "Visual Obs" is the wrist camera a policy
 actually observes -- a different camera, which is why the viewpoint changes."""
 
 
@@ -68,8 +68,7 @@ def load_expert_config(task_id):
     assert summary["env_id"] == task_id, f"{expert_folder(task_id)} holds a {summary['env_id']} run"
     return dict(
         env_id=summary["env_id"],
-        camera_view=summary["camera_view"],
-        camera_resolution=summary["camera_resolution"],
+        cameras=summary_cameras(summary),
         include_state=summary["include_state"],
         control_mode=summary["control_mode"],
     )
